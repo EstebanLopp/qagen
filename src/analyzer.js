@@ -44,7 +44,11 @@ async function analyzeApp(url) {
 
     document.querySelectorAll('a').forEach(el => {
       if (el.innerText.trim()) {
-        result.links.push(el.innerText.trim());
+        result.links.push({
+          text: el.innerText.trim(),
+          href: el.href,
+          target: el.target || '_self'
+        });
       }
     });
 
@@ -65,7 +69,7 @@ async function analyzeApp(url) {
 async function generateTests(url, elements) {
   const prompt = `
 Eres un experto en testing automatizado con Playwright.
-Analiza estos elementos de la página ${url} y genera tests completos en Playwright:
+Analiza estos elementos de la página ${url} y genera tests completos en Playwright.
 
 Elementos encontrados:
 - Botones: ${JSON.stringify(elements.buttons)}
@@ -73,19 +77,42 @@ Elementos encontrados:
 - Formularios: ${JSON.stringify(elements.forms)}
 - Links: ${JSON.stringify(elements.links)}
 
-Genera tests de Playwright en JavaScript que:
-1. Prueben el flujo principal de la página
-2. Validen que los elementos existen
-3. Prueben casos exitosos y fallidos si aplica
-4. Usen buenas prácticas de testing
+Reglas estrictas:
+1. Genera SOLO código JavaScript válido
+2. Usa SOLO estos imports: const { test, expect } = require('@playwright/test');
+3. Cada test debe ser independiente
+4. NO repitas ningún bloque de código
+5. NO agregues comentarios fuera de los tests
+6. Cierra correctamente TODOS los bloques con llaves
 
-Responde SOLO con el código JavaScript, sin explicaciones.
+Estructura exacta a seguir:
+const { test, expect } = require('@playwright/test');
+
+test.describe('Nombre descriptivo', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('${url}');
+  });
+
+  test('descripcion del test', async ({ page }) => {
+    // test aqui
+  });
+});
   `;
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: 1500
+    messages: [
+      {
+        role: 'system',
+        content: 'Eres un generador de código. Respondes ÚNICAMENTE con código JavaScript válido y completo. Sin explicaciones, sin markdown, sin texto adicional.'
+      },
+      {
+        role: 'user',
+        content: prompt
+      }
+    ],
+    max_tokens: 2000,
+    temperature: 0.2
   });
 
   return response.choices[0].message.content;
