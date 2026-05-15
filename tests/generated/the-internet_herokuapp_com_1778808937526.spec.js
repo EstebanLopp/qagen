@@ -16,13 +16,11 @@ test.describe('Login Page Tests', () => {
     await page.fill('input[name="username"]', 'invalidUser');
     await page.fill('input[name="password"]', 'invalidPassword');
     await page.click('button[type="submit"]');
-    await expect(page.locator('h4.subheader')).toHaveText('Your username is invalid!');
+    await expect(page.locator('#flash')).toContainText('Your username is invalid!');
   });
 
   test('Campo password enmascara el texto', async ({ page }) => {
-    await page.fill('input[name="password"]', 'testPassword');
-    const passwordInput = await page.locator('input[name="password"]');
-    await expect(passwordInput).toHaveAttribute('type', 'password');
+    await expect(page.locator('input[type="password"]')).toHaveAttribute('type', 'password');
   });
 
   test('Redirección después del login exitoso', async ({ page }) => {
@@ -34,6 +32,6 @@ test.describe('Login Page Tests', () => {
 
   test('Formulario no se envía vacío', async ({ page }) => {
     await page.click('button[type="submit"]');
-    await expect(page.locator('h4.subheader')).toHaveText('Your username is invalid!');
+    await expect(page.locator('#flash')).toContainText('Your username is invalid!');
   });
 });

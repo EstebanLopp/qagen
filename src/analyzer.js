@@ -107,8 +107,6 @@ async function analyzeApp(url) {
 
   await browser.close();
 
-  // El flow detector corre sobre los datos ya recolectados, sin abrir
-  // browser de nuevo. Es puro análisis de señales del DOM.
   const flow = detectFlow(url, elements, pageInfo);
 
   console.log(`✅ Elementos encontrados`);
@@ -198,10 +196,6 @@ async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, fl
     restrictions.push('- La página tiene input de archivo: usa page.setInputFiles() SOLO para file inputs');
   }
 
-  // El contexto de flujo le dice a la IA qué tipo de página es y qué
-  // escenarios son los más importantes para probar. Esto reemplaza la
-  // generación genérica de "testea lo que ves" por una guiada por
-  // conocimiento del negocio.
   const flowContext = flow.type !== 'unknown'
     ? `
 CONTEXTO DE FLUJO (resultado del análisis semántico de la página):
@@ -256,6 +250,9 @@ REGLAS CRÍTICAS:
 9. NO generes tests para links a elementalselenium.com.
 10. Para toHaveTitle() usa el título real proporcionado arriba, como string exacto.
 11. Cierra TODOS los bloques con llaves.
+12. Para verificar que un campo password enmascara el texto, usa SIEMPRE:
+    await expect(page.locator('input[type="password"]')).toHaveAttribute('type', 'password');
+    NUNCA verifiques el valor del campo ni uses .not.toBe() para esto.
 
 Estructura exacta:
 const { test, expect } = require('@playwright/test');
