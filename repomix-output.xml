@@ -1,9 +1,240 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+index.js
+package.json
+playwright.config.js
+src/analyzer.js
+src/crawler.js
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="playwright.config.js">
+const { defineConfig } = require('@playwright/test');
+
+module.exports = defineConfig({
+  testDir: './tests/generated',
+  timeout: 30000,
+  retries: 1,
+  fullyParallel: false,
+  workers: 1,
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report', open: 'never' }]
+  ],
+  use: {
+    headless: true,
+    screenshot: 'only-on-failure',
+    video: 'off'
+  }
+});
+</file>
+
+<file path="src/crawler.js">
+const { chromium } = require('playwright');
+
+async function crawlRoutes(baseUrl) {
+  console.log(`\n🕷️  Detectando rutas en: ${baseUrl}\n`);
+
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
+  await page.goto(baseUrl);
+
+  const routes = await page.evaluate((base) => {
+    const found = new Set();
+    found.add(base);
+
+    document.querySelectorAll('a').forEach(el => {
+      const href = el.href;
+      if (
+        href &&
+        href.startsWith(base) &&
+        !href.includes('#') &&
+        !href.includes('mailto') &&
+        !href.includes('javascript')
+      ) {
+        found.add(href);
+      }
+    });
+
+    return Array.from(found);
+  }, baseUrl);
+
+  await browser.close();
+
+  console.log(`✅ Rutas detectadas: ${routes.length}`);
+  routes.forEach(r => console.log(`   → ${r}`));
+
+  return routes;
+}
+
+module.exports = { crawlRoutes };
+</file>
+
+<file path=".gitignore">
+node_modules
+.env
+test-results
+playwright-report
+</file>
+
+<file path="package.json">
+{
+  "name": "qagen",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "npx playwright test",
+    "test:report": "npx playwright test && npx playwright show-report",
+    "generate": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@playwright/test": "^1.60.0",
+    "dotenv": "^17.4.2",
+    "openai": "^6.37.0",
+    "playwright": "^1.60.0"
+  }
+}
+</file>
+
+<file path="index.js">
+const { analyzeApp } = require('./src/analyzer');
+const { crawlRoutes } = require('./src/crawler');
+const { spawnSync } = require('child_process');
+
+const url = process.argv[2];
+const mode = process.argv[3] || 'single';
+
+if (!url) {
+  console.log('❌ Debes proporcionar una URL');
+  console.log('Uso:');
+  console.log('  node index.js https://ejemplo.com          (analiza y testea una página)');
+  console.log('  node index.js https://ejemplo.com crawl    (detecta, analiza y testea todas las rutas)');
+  process.exit(1);
+}
+
+function runTests() {
+  console.log('\n🧪 Ejecutando tests generados...\n');
+
+  // Pasamos el directorio completo en lugar de rutas individuales.
+  // Esto evita el problema de separadores \ en Windows que Playwright
+  // interpreta como expresiones regulares en lugar de paths de archivo.
+  const result = spawnSync(
+    'npx',
+    ['playwright', 'test', 'tests/generated'],
+    {
+      stdio: 'inherit',
+      cwd: process.cwd(),
+      shell: true
+    }
+  );
+
+  if (result.status !== 0 && result.status !== 1) {
+    console.log(`\n⚠️  Playwright terminó con código inesperado: ${result.status}`);
+    if (result.error) {
+      console.log(`   Error: ${result.error.message}`);
+    }
+  }
+
+  console.log('\n📊 Reporte disponible en: playwright-report/index.html');
+  console.log('   Ejecuta "npx playwright show-report" para abrirlo\n');
+}
+
+async function run() {
+  if (mode === 'crawl') {
+    const routes = await crawlRoutes(url);
+    console.log('\n🤖 Analizando cada ruta...\n');
+
+    const filepaths = [];
+    const failed = [];
+
+    for (let i = 0; i < routes.length; i++) {
+      const route = routes[i];
+      console.log(`\n[${i + 1}/${routes.length}] ${route}`);
+
+      try {
+        const filepath = await analyzeApp(route);
+        filepaths.push(filepath);
+      } catch (err) {
+        console.log(`⚠️  Falló el análisis de ${route}: ${err.message}`);
+        failed.push(route);
+      }
+    }
+
+    if (failed.length > 0) {
+      console.log('\n⚠️  Rutas que fallaron:');
+      failed.forEach(r => console.log(`   → ${r}`));
+    }
+
+    if (filepaths.length > 0) {
+      runTests();
+    } else {
+      console.log('\n❌ No se generó ningún test. Revisa los errores anteriores.');
+    }
+
+  } else {
+    await analyzeApp(url);
+    runTests();
+  }
+}
+
+run().catch(console.error);
+</file>
+
+<file path="src/analyzer.js">
 const { chromium } = require('playwright');
 const OpenAI = require('openai');
 const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
-const { detectFlow } = require('./flow-detector');
 
 dotenv.config();
 
@@ -105,18 +336,13 @@ async function analyzeApp(url) {
       .substring(0, 3000);
   });
 
+  console.log('✅ Elementos encontrados');
+  console.log('🤖 Generando tests con IA...\n');
+
   await browser.close();
 
-  // El flow detector corre sobre los datos ya recolectados, sin abrir
-  // browser de nuevo. Es puro análisis de señales del DOM.
-  const flow = detectFlow(url, elements, pageInfo);
-
-  console.log(`✅ Elementos encontrados`);
-  console.log(`🧠 Flujo detectado: ${flow.type} (confianza: ${flow.confidence})`);
-  console.log(`🤖 Generando tests con IA...\n`);
-
   const pageCategory = detectPageCategory(url);
-  const result = await generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow);
+  const result = await generateTests(url, elements, bodyHTML, pageInfo, pageCategory);
 
   if (!result) {
     throw new Error(`No se pudo generar código válido para ${url}`);
@@ -126,7 +352,7 @@ async function analyzeApp(url) {
   return filepath;
 }
 
-async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow) {
+async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory) {
   const categoryInstructions = {
     auth: `INSTRUCCIÓN ESPECIAL - PÁGINA CON AUTENTICACIÓN:
 - El beforeEach debe usar: await page.goto('${url.replace('://', '://admin:admin@')}');
@@ -198,23 +424,6 @@ async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, fl
     restrictions.push('- La página tiene input de archivo: usa page.setInputFiles() SOLO para file inputs');
   }
 
-  // El contexto de flujo le dice a la IA qué tipo de página es y qué
-  // escenarios son los más importantes para probar. Esto reemplaza la
-  // generación genérica de "testea lo que ves" por una guiada por
-  // conocimiento del negocio.
-  const flowContext = flow.type !== 'unknown'
-    ? `
-CONTEXTO DE FLUJO (resultado del análisis semántico de la página):
-- Tipo de flujo detectado: ${flow.type}
-- Confianza de la detección: ${flow.confidence}
-- Escenarios críticos que DEBES cubrir en este orden de prioridad:
-${flow.testingHints.map((hint, i) => `  ${i + 1}. ${hint}`).join('\n')}
-
-Estos escenarios están ordenados por importancia de negocio. Priorizalos
-sobre cualquier otro test que puedas considerar generar.
-`
-    : '';
-
   const prompt = `
 Eres un experto en testing automatizado con Playwright v1.60.
 Genera tests válidos para la URL: ${url}
@@ -233,7 +442,6 @@ Elementos con su estado actual:
 - Formularios: ${JSON.stringify(elements.forms)}
 - Links: ${JSON.stringify(elements.links)}
 
-${flowContext}
 ${specialInstruction ? `\n${specialInstruction}\n` : ''}
 ${restrictions.length > 0 ? '\nRESTRICCIONES ESPECÍFICAS:\n' + restrictions.join('\n') : ''}
 
@@ -293,11 +501,15 @@ test.describe('Nombre descriptivo', () => {
         temperature: 0.1
       });
     } catch (apiError) {
+      // Error de red, rate limit, clave inválida, etc.
+      // Se loguea el intento y se reintenta si quedan intentos
       console.log(`⚠️  Intento ${attempt}/${maxRetries}: error al llamar OpenAI — ${apiError.message}`);
       if (attempt === maxRetries) return null;
       continue;
     }
 
+    // La limpieza de markdown se hace aquí, una sola vez,
+    // antes de validar la sintaxis
     let code = response.choices[0].message.content
       .replace(/```javascript\n?/g, '')
       .replace(/```\n?/g, '');
@@ -320,6 +532,8 @@ function saveTests(code, url) {
 
   fs.mkdirSync(path.dirname(filepath), { recursive: true });
 
+  // Toda la limpieza y corrección ocurre aquí, una sola vez,
+  // antes de escribir el archivo al disco
   let clean = code
     .replace(/```javascript\n?/g, '')
     .replace(/```\n?/g, '');
@@ -342,3 +556,6 @@ function saveTests(code, url) {
 }
 
 module.exports = { analyzeApp };
+</file>
+
+</files>
