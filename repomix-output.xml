@@ -46,10 +46,18 @@ package.json
 playwright.config.js
 src/analyzer.js
 src/crawler.js
+src/flow-detector.js
+src/healer.js
+src/reporter.js
+tests/generated/the-internet_herokuapp_com_1778808937526.spec.js
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="src/reporter.js">
+
+</file>
 
 <file path="playwright.config.js">
 const { defineConfig } = require('@playwright/test');
@@ -114,6 +122,625 @@ async function crawlRoutes(baseUrl) {
 module.exports = { crawlRoutes };
 </file>
 
+<file path="src/flow-detector.js">
+/**
+ * flow-detector.js
+ *
+ * Detecta el tipo de flujo crítico de una página web a partir de las
+ * señales del DOM que ya recopiló el analyzer: inputs, botones, links,
+ * título, H1 y URL.
+ *
+ * Devuelve un objeto con:
+ *   - type: string  → el flujo detectado
+ *   - confidence: 'high' | 'medium' | 'low'
+ *   - signals: string[]  → las señales concretas que activaron la detección
+ *   - testingHints: string[]  → qué debe priorizar el generador de tests
+ */
+
+// Cada flujo tiene una lista de señales. Cada señal tiene un peso (points).
+// El detector acumula puntos por señal encontrada y el flujo con más puntos gana.
+const FLOW_DEFINITIONS = {
+  login: {
+    signals: [
+      // Señales de URL
+      { type: 'url',    pattern: /login|signin|sign-in|acceso|entrar/i,         points: 3 },
+      // Señales de texto visible (título, H1, H2, botones)
+      { type: 'text',   pattern: /log\s?in|sign\s?in|iniciar sesi[oó]n/i,       points: 3 },
+      // Señales de inputs específicos
+      { type: 'input',  name: /user|email|correo/i,                              points: 2 },
+      { type: 'input',  name: /pass|password|contrase[ñn]a/i,                   points: 3 },
+      // Señales de botones
+      { type: 'button', text: /log\s?in|sign\s?in|entrar|acceder|ingresar/i,    points: 3 },
+      // Penalización: si hay campo de confirmación de contraseña, probablemente es registro
+      { type: 'input',  name: /confirm|repeat|verificar/i,                       points: -3 },
+    ],
+    testingHints: [
+      'Testea login exitoso con credenciales válidas',
+      'Testea mensaje de error con credenciales inválidas',
+      'Verifica que el campo password enmascara el texto (type=password)',
+      'Verifica redirección después del login exitoso',
+      'Testea que el formulario no se envía vacío',
+    ]
+  },
+
+  register: {
+    signals: [
+      { type: 'url',    pattern: /register|signup|sign-up|registro|crear|new.?account/i, points: 3 },
+      { type: 'text',   pattern: /register|sign\s?up|crear cuenta|nuevo usuario/i,        points: 3 },
+      { type: 'input',  name: /confirm|repeat|verificar/i,                                points: 3 },
+      { type: 'input',  name: /name|nombre/i,                                             points: 2 },
+      { type: 'input',  name: /email|correo/i,                                            points: 1 },
+      { type: 'input',  name: /pass|password/i,                                           points: 1 },
+      { type: 'button', text: /register|sign\s?up|crear|registrar|continue/i,             points: 3 },
+    ],
+    testingHints: [
+      'Testea registro exitoso con datos válidos',
+      'Verifica validación de email con formato inválido',
+      'Testea que las contraseñas deben coincidir',
+      'Verifica campos requeridos al enviar vacío',
+      'Testea que el usuario ya registrado muestra error',
+    ]
+  },
+
+  checkout: {
+    signals: [
+      { type: 'url',    pattern: /checkout|cart|carrito|pago|payment|order/i,    points: 3 },
+      { type: 'text',   pattern: /checkout|cart|carrito|payment|order|pago/i,    points: 3 },
+      { type: 'input',  name: /card|tarjeta|credit|cvv|expir/i,                  points: 4 },
+      { type: 'input',  name: /address|direcci[oó]n|zip|postal/i,                points: 3 },
+      { type: 'button', text: /pay|pagar|comprar|buy|purchase|confirmar|order/i, points: 4 },
+      { type: 'text',   pattern: /\$|€|total|subtotal|precio/i,                  points: 2 },
+    ],
+    testingHints: [
+      'Verifica que el total se calcula correctamente',
+      'Testea validación de número de tarjeta inválido',
+      'Verifica que campos de dirección son requeridos',
+      'Testea el flujo completo de compra',
+      'Verifica mensaje de confirmación después del pago',
+    ]
+  },
+
+  search: {
+    signals: [
+      { type: 'url',    pattern: /search|buscar|query|q=/i,                      points: 2 },
+      { type: 'text',   pattern: /search|buscar|encuentra|find/i,                points: 2 },
+      { type: 'input',  name: /search|query|buscar|q/i,                          points: 3 },
+      { type: 'input',  placeholder: /search|buscar|encuentra/i,                 points: 3 },
+      { type: 'button', text: /search|buscar|find|go/i,                          points: 2 },
+    ],
+    testingHints: [
+      'Testea búsqueda con término válido y verifica resultados',
+      'Testea búsqueda vacía',
+      'Testea búsqueda con término sin resultados',
+      'Verifica que el término buscado aparece en los resultados',
+    ]
+  },
+
+  'crud-form': {
+    signals: [
+      { type: 'url',    pattern: /new|create|edit|update|add|nuevo|crear|editar/i, points: 2 },
+      { type: 'text',   pattern: /new|create|edit|update|add|nuevo|crear|editar/i, points: 2 },
+      // Forms con múltiples inputs pero sin señales de login/registro/checkout
+      { type: 'form',   minInputs: 3,                                              points: 2 },
+      { type: 'button', text: /save|guardar|submit|send|create|update|add/i,       points: 3 },
+      { type: 'button', text: /cancel|cancelar|delete|eliminar/i,                  points: 1 },
+    ],
+    testingHints: [
+      'Testea creación exitosa con datos válidos',
+      'Verifica validación de campos requeridos',
+      'Testea cancelar/descartar cambios',
+      'Verifica que los datos guardados se muestran correctamente',
+    ]
+  },
+
+  dashboard: {
+    signals: [
+      { type: 'url',    pattern: /dashboard|panel|home|inicio|overview|main/i,   points: 2 },
+      { type: 'text',   pattern: /dashboard|panel|resumen|overview|bienvenido/i, points: 2 },
+      // Dashboards tienen muchos links de navegación pero pocos forms
+      { type: 'link',   minLinks: 5,                                              points: 2 },
+      { type: 'form',   maxInputs: 1,                                             points: 1 },
+    ],
+    testingHints: [
+      'Verifica que los elementos principales de navegación son visibles',
+      'Verifica que el usuario autenticado ve su información',
+      'Testea que los links de navegación funcionan',
+    ]
+  }
+};
+
+/**
+ * Normaliza todo el texto visible de la página en un solo string
+ * para hacer matching más fácil contra los patrones de señales de texto.
+ */
+function buildTextCorpus(pageInfo, elements) {
+  const parts = [
+    pageInfo.title || '',
+    pageInfo.h1 || '',
+    pageInfo.h2 || '',
+    ...elements.buttons.map(b => b.text || ''),
+    ...elements.links.map(l => l.text || ''),
+  ];
+  return parts.join(' ');
+}
+
+/**
+ * Evalúa cuántos puntos acumula un flujo dado para esta página.
+ * Retorna { score, signals } donde signals son las señales activadas.
+ */
+function scoreFlow(flowName, definition, url, elements, pageInfo) {
+  let score = 0;
+  const activatedSignals = [];
+  const textCorpus = buildTextCorpus(pageInfo, elements);
+
+  for (const signal of definition.signals) {
+
+    if (signal.type === 'url') {
+      if (signal.pattern.test(url)) {
+        score += signal.points;
+        activatedSignals.push(`URL contiene patrón "${signal.pattern.source}" (+${signal.points})`);
+      }
+    }
+
+    else if (signal.type === 'text') {
+      if (signal.pattern.test(textCorpus)) {
+        score += signal.points;
+        activatedSignals.push(`Texto visible contiene "${signal.pattern.source}" (+${signal.points})`);
+      }
+    }
+
+    else if (signal.type === 'input') {
+      const matchingInputs = elements.inputs.filter(input => {
+        const nameMatch = signal.name
+          ? signal.name.test(input.name || '') || signal.name.test(input.placeholder || '')
+          : false;
+        const placeholderMatch = signal.placeholder
+          ? signal.placeholder.test(input.placeholder || '')
+          : false;
+        return nameMatch || placeholderMatch;
+      });
+
+      if (matchingInputs.length > 0) {
+        score += signal.points;
+        const direction = signal.points > 0 ? `+${signal.points}` : signal.points;
+        activatedSignals.push(`Input con nombre/placeholder "${signal.name?.source || signal.placeholder?.source}" (${direction})`);
+      }
+    }
+
+    else if (signal.type === 'button') {
+      const matchingButtons = elements.buttons.filter(b =>
+        signal.text.test(b.text || '')
+      );
+      if (matchingButtons.length > 0) {
+        score += signal.points;
+        activatedSignals.push(`Botón con texto "${signal.text.source}" (+${signal.points})`);
+      }
+    }
+
+    else if (signal.type === 'form') {
+      const inputCount = elements.inputs.length;
+      if (signal.minInputs !== undefined && inputCount >= signal.minInputs) {
+        score += signal.points;
+        activatedSignals.push(`Formulario con ${inputCount} inputs >= ${signal.minInputs} (+${signal.points})`);
+      }
+      if (signal.maxInputs !== undefined && inputCount <= signal.maxInputs) {
+        score += signal.points;
+        activatedSignals.push(`Formulario con ${inputCount} inputs <= ${signal.maxInputs} (+${signal.points})`);
+      }
+    }
+
+    else if (signal.type === 'link') {
+      const linkCount = elements.links.length;
+      if (signal.minLinks !== undefined && linkCount >= signal.minLinks) {
+        score += signal.points;
+        activatedSignals.push(`${linkCount} links >= ${signal.minLinks} (+${signal.points})`);
+      }
+    }
+  }
+
+  return { score, signals: activatedSignals };
+}
+
+/**
+ * Función principal. Recibe los datos ya recolectados por el analyzer
+ * y devuelve el flujo detectado con su contexto.
+ *
+ * @param {string} url
+ * @param {object} elements  - { buttons, inputs, forms, links }
+ * @param {object} pageInfo  - { title, h1, h2, ... }
+ * @returns {{ type, confidence, signals, testingHints }}
+ */
+function detectFlow(url, elements, pageInfo) {
+  const results = [];
+
+  for (const [flowName, definition] of Object.entries(FLOW_DEFINITIONS)) {
+    const { score, signals } = scoreFlow(flowName, definition, url, elements, pageInfo);
+    if (score > 0) {
+      results.push({ type: flowName, score, signals, testingHints: definition.testingHints });
+    }
+  }
+
+  // Ordenar por score descendente
+  results.sort((a, b) => b.score - a.score);
+
+  if (results.length === 0 || results[0].score < 2) {
+    return {
+      type: 'unknown',
+      confidence: 'low',
+      signals: ['No se encontraron señales suficientes para clasificar el flujo'],
+      testingHints: [
+        'Verifica que la página carga correctamente',
+        'Testea los elementos interactivos visibles',
+        'Verifica el título de la página',
+      ]
+    };
+  }
+
+  const winner = results[0];
+  const runnerUp = results[1];
+
+  // Confianza alta: el ganador tiene ventaja clara sobre el segundo
+  // Confianza media: hay competencia entre dos flujos
+  // Confianza baja: score bajo o muy reñido
+  let confidence;
+  if (winner.score >= 6 && (!runnerUp || winner.score >= runnerUp.score * 1.5)) {
+    confidence = 'high';
+  } else if (winner.score >= 3) {
+    confidence = 'medium';
+  } else {
+    confidence = 'low';
+  }
+
+  return {
+    type: winner.type,
+    confidence,
+    signals: winner.signals,
+    testingHints: winner.testingHints
+  };
+}
+
+module.exports = { detectFlow };
+</file>
+
+<file path="src/healer.js">
+/**
+ * healer.js
+ *
+ * Auto-healing de tests fallidos. Cuando Playwright reporta un fallo
+ * por selector incorrecto, este módulo:
+ *
+ * 1. Parsea el output de Playwright para identificar qué falló y por qué
+ * 2. Abre el browser y reproduce la acción que causó el fallo
+ * 3. Busca el texto esperado en el DOM real post-acción
+ * 4. Si lo encuentra, reescribe el selector en el archivo .spec.js
+ *
+ * Solo actúa sobre fallos de tipo "selector encontró el elemento pero
+ * el texto/valor no coincide". No intenta curar fallos de lógica,
+ * timeouts de red, o errores de sintaxis.
+ */
+
+const { chromium } = require('playwright');
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * Elimina los códigos de escape ANSI del output de Playwright.
+ * Playwright colorea su output con secuencias como \u001b[32m (verde),
+ * \u001b[39m (reset), etc. Estas secuencias rompen los regex del parser
+ * porque quedan intercaladas en el texto que queremos extraer.
+ */
+function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+/**
+ * Parsea el output de texto de Playwright y extrae los fallos accionables.
+ */
+function parseFailures(playwrightOutput, cwd) {
+  const clean = stripAnsi(playwrightOutput);
+  const failures = [];
+  const errorBlocks = clean.split(/\n\s*\d+\) /);
+
+  for (const block of errorBlocks) {
+    if (!block.includes('toHaveText') && !block.includes('toContainText')) continue;
+
+    const expectedMatch = block.match(/Expected:\s+"([^"]+)"/);
+    if (!expectedMatch) continue;
+    const expectedText = expectedMatch[1];
+
+    const locatorMatch = block.match(/Locator:\s+locator\('([^']+)'\)/);
+    if (!locatorMatch) continue;
+    const locator = locatorMatch[1];
+
+    const fileMatch = block.match(/at\s+([^\n]+\.spec\.js):(\d+):/);
+    if (!fileMatch) continue;
+
+    let filePath = fileMatch[1].trim();
+    const line = parseInt(fileMatch[2], 10);
+
+    if (!path.isAbsolute(filePath)) {
+      filePath = path.join(cwd, filePath);
+    }
+    filePath = path.normalize(filePath);
+
+    failures.push({ filePath, line, expectedText, locator });
+  }
+
+  const seen = new Set();
+  return failures.filter(f => {
+    const key = `${f.filePath}:${f.line}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Extrae las acciones de interacción previas a la línea del fallo.
+ */
+function extractActionsBeforeLine(filePath, failLine) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split('\n');
+  const actions = [];
+
+  for (let i = failLine - 2; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line.startsWith('test(') || line.startsWith('test.beforeEach')) break;
+
+    if (
+      line.includes('page.fill(') ||
+      line.includes('page.click(') ||
+      line.includes('page.goto(') ||
+      line.includes('page.press(') ||
+      line.includes('page.selectOption(')
+    ) {
+      actions.unshift(line);
+    }
+  }
+
+  return actions;
+}
+
+/**
+ * Extrae la URL del goto del beforeEach.
+ */
+function extractGotoUrl(filePath) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const match = content.match(/page\.goto\('([^']+)'\)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Abre el browser, reproduce las acciones, y busca el texto esperado
+ * en el DOM resultante. Devuelve el selector del elemento que lo contiene.
+ */
+async function findSelectorInLiveDom(url, actions, expectedText) {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(url);
+
+    for (const action of actions) {
+      if (action.includes('page.goto(')) continue;
+      try {
+        const fn = new Function('page', `return (async () => { ${action} })()`);
+        await fn(page);
+        await page.waitForTimeout(500);
+      } catch {
+        console.log(`   ⚠️  Acción no ejecutable: ${action.substring(0, 60)}`);
+      }
+    }
+
+    await page.waitForTimeout(1000);
+
+    const candidateSelectors = [
+      '#flash',
+      '.flash',
+      '.alert',
+      '.error',
+      '.message',
+      '.notification',
+      '[role="alert"]',
+      'p',
+      'span',
+      'div',
+    ];
+
+    for (const selector of candidateSelectors) {
+      const elements = await page.locator(selector).all();
+      for (const el of elements) {
+        try {
+          const text = await el.textContent();
+          if (text && text.includes(expectedText)) {
+            const id = await el.getAttribute('id');
+            const className = await el.getAttribute('class');
+            await browser.close();
+            if (id) return `#${id}`;
+            if (className) {
+              const firstClass = className.trim().split(/\s+/)[0];
+              return `.${firstClass}`;
+            }
+            return selector;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    await browser.close();
+    return null;
+
+  } catch (err) {
+    await browser.close();
+    throw err;
+  }
+}
+
+/**
+ * Reemplaza el selector incorrecto en el archivo .spec.js y cambia
+ * toHaveText por toContainText cuando corresponde.
+ *
+ * Por qué toContainText: cuando el healer encuentra el texto esperado
+ * dentro de un elemento que tiene contenido adicional (como el botón ×
+ * de cierre en mensajes flash), toHaveText falla porque exige match
+ * exacto. toContainText verifica que el texto esté contenido dentro,
+ * sin importar el resto del contenido del elemento.
+ */
+function patchFile(filePath, failLine, oldLocator, newSelector) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split('\n');
+
+  const targetLine = lines[failLine - 1];
+
+  if (!targetLine) {
+    console.log(`   ⚠️  No se encontró la línea ${failLine}`);
+    return false;
+  }
+
+  const oldPattern = `locator('${oldLocator}')`;
+  const newPattern = `locator('${newSelector}')`;
+
+  if (!targetLine.includes(oldPattern)) {
+    console.log(`   ⚠️  Patrón no encontrado en línea ${failLine}: ${oldPattern}`);
+    return false;
+  }
+
+  // Primero reemplazamos el selector
+  let newLine = targetLine.replace(oldPattern, newPattern);
+
+  // Luego cambiamos toHaveText por toContainText.
+  // El healer encontró el texto dentro del elemento pero puede haber
+  // contenido adicional (espacios, botón de cierre, etc.), entonces
+  // toHaveText (match exacto) siempre fallará. toContainText es correcto.
+  newLine = newLine.replace('.toHaveText(', '.toContainText(');
+
+  lines[failLine - 1] = newLine;
+  fs.writeFileSync(filePath, lines.join('\n'));
+  return true;
+}
+
+/**
+ * Función principal. Detecta fallos, intenta curarlos, retorna resumen.
+ */
+async function healFailures(playwrightOutput, cwd) {
+  const failures = parseFailures(playwrightOutput, cwd);
+
+  if (failures.length === 0) {
+    return { healed: 0, failed: 0, details: [] };
+  }
+
+  console.log(`\n🔧 Auto-healing: ${failures.length} fallo(s) accionable(s) detectado(s)\n`);
+
+  let healed = 0;
+  let failed = 0;
+  const details = [];
+
+  for (const failure of failures) {
+    const { filePath, line, expectedText, locator } = failure;
+
+    console.log(`   → Curando: "${expectedText}" en ${path.basename(filePath)}:${line}`);
+
+    if (!fs.existsSync(filePath)) {
+      console.log(`   ⚠️  Archivo no encontrado: ${filePath}`);
+      failed++;
+      details.push(`❌ ${path.basename(filePath)}:${line} — archivo no encontrado`);
+      continue;
+    }
+
+    const url = extractGotoUrl(filePath);
+    if (!url) {
+      console.log(`   ⚠️  No se pudo extraer la URL`);
+      failed++;
+      details.push(`❌ ${path.basename(filePath)}:${line} — URL no encontrada`);
+      continue;
+    }
+
+    const actions = extractActionsBeforeLine(filePath, line);
+
+    try {
+      const newSelector = await findSelectorInLiveDom(url, actions, expectedText);
+
+      if (!newSelector) {
+        console.log(`   ⚠️  Texto "${expectedText}" no encontrado en DOM post-acción`);
+        failed++;
+        details.push(`❌ ${path.basename(filePath)}:${line} — texto no encontrado en DOM`);
+        continue;
+      }
+
+      if (newSelector === locator) {
+        console.log(`   ⚠️  Selector encontrado es el mismo que el original`);
+        failed++;
+        details.push(`❌ ${path.basename(filePath)}:${line} — mismo selector`);
+        continue;
+      }
+
+      const patched = patchFile(filePath, line, locator, newSelector);
+
+      if (patched) {
+        console.log(`   ✅ Curado: locator('${locator}').toHaveText → locator('${newSelector}').toContainText`);
+        healed++;
+        details.push(`✅ ${path.basename(filePath)}:${line} — ${locator} → ${newSelector}`);
+      } else {
+        failed++;
+        details.push(`❌ ${path.basename(filePath)}:${line} — patch falló`);
+      }
+
+    } catch (err) {
+      console.log(`   ⚠️  Error durante healing: ${err.message}`);
+      failed++;
+      details.push(`❌ ${path.basename(filePath)}:${line} — ${err.message}`);
+    }
+  }
+
+  return { healed, failed, details };
+}
+
+module.exports = { healFailures };
+</file>
+
+<file path="tests/generated/the-internet_herokuapp_com_1778808937526.spec.js">
+const { test, expect } = require('@playwright/test');
+
+test.describe('Login Page Tests', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('https://the-internet.herokuapp.com/login');
+  });
+
+  test('Login exitoso con credenciales válidas', async ({ page }) => {
+    await page.fill('input[name="username"]', 'tomsmith');
+    await page.fill('input[name="password"]', 'SuperSecretPassword!');
+    await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(/.*secure/);
+  });
+
+  test('Mensaje de error con credenciales inválidas', async ({ page }) => {
+    await page.fill('input[name="username"]', 'invalidUser');
+    await page.fill('input[name="password"]', 'invalidPassword');
+    await page.click('button[type="submit"]');
+    await expect(page.locator('#flash')).toContainText('Your username is invalid!');
+  });
+
+  test('Campo password enmascara el texto', async ({ page }) => {
+    await expect(page.locator('input[type="password"]')).toHaveAttribute('type', 'password');
+  });
+
+  test('Redirección después del login exitoso', async ({ page }) => {
+    await page.fill('input[name="username"]', 'tomsmith');
+    await page.fill('input[name="password"]', 'SuperSecretPassword!');
+    await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(/.*secure/);
+  });
+
+  test('Formulario no se envía vacío', async ({ page }) => {
+    await page.click('button[type="submit"]');
+    await expect(page.locator('#flash')).toContainText('Your username is invalid!');
+  });
+});
+</file>
+
 <file path=".gitignore">
 node_modules
 .env
@@ -148,6 +775,7 @@ playwright-report
 <file path="index.js">
 const { analyzeApp } = require('./src/analyzer');
 const { crawlRoutes } = require('./src/crawler');
+const { healFailures } = require('./src/healer');
 const { spawnSync } = require('child_process');
 
 const url = process.argv[2];
@@ -161,12 +789,52 @@ if (!url) {
   process.exit(1);
 }
 
+/**
+ * Ejecuta los tests y devuelve el output como string además de
+ * mostrarlo en consola. Necesitamos el texto para que el healer
+ * pueda parsear los fallos.
+ */
 function runTests() {
   console.log('\n🧪 Ejecutando tests generados...\n');
 
-  // Pasamos el directorio completo en lugar de rutas individuales.
-  // Esto evita el problema de separadores \ en Windows que Playwright
-  // interpreta como expresiones regulares en lugar de paths de archivo.
+  // pipe en lugar de inherit para capturar el output como string
+  // y poder pasárselo al healer
+  const result = spawnSync(
+    'npx',
+    ['playwright', 'test', 'tests/generated'],
+    {
+      cwd: process.cwd(),
+      shell: true,
+      encoding: 'utf8',
+      // Capturamos stdout y stderr pero también los mostramos
+      stdio: ['inherit', 'pipe', 'pipe']
+    }
+  );
+
+  // Mostrar el output en consola como lo haría inherit
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+
+  const output = (result.stdout || '') + (result.stderr || '');
+  const hasFailed = result.status === 1;
+
+  if (result.status !== 0 && result.status !== 1) {
+    console.log(`\n⚠️  Playwright terminó con código inesperado: ${result.status}`);
+    if (result.error) {
+      console.log(`   Error: ${result.error.message}`);
+    }
+  }
+
+  return { output, hasFailed };
+}
+
+/**
+ * Vuelve a ejecutar los tests después del healing para confirmar
+ * que los parches funcionaron. Solo muestra el resumen final.
+ */
+function rerunTests() {
+  console.log('\n🔁 Re-ejecutando tests después del healing...\n');
+
   const result = spawnSync(
     'npx',
     ['playwright', 'test', 'tests/generated'],
@@ -177,15 +845,7 @@ function runTests() {
     }
   );
 
-  if (result.status !== 0 && result.status !== 1) {
-    console.log(`\n⚠️  Playwright terminó con código inesperado: ${result.status}`);
-    if (result.error) {
-      console.log(`   Error: ${result.error.message}`);
-    }
-  }
-
-  console.log('\n📊 Reporte disponible en: playwright-report/index.html');
-  console.log('   Ejecuta "npx playwright show-report" para abrirlo\n');
+  return result.status;
 }
 
 async function run() {
@@ -193,7 +853,6 @@ async function run() {
     const routes = await crawlRoutes(url);
     console.log('\n🤖 Analizando cada ruta...\n');
 
-    const filepaths = [];
     const failed = [];
 
     for (let i = 0; i < routes.length; i++) {
@@ -201,8 +860,7 @@ async function run() {
       console.log(`\n[${i + 1}/${routes.length}] ${route}`);
 
       try {
-        const filepath = await analyzeApp(route);
-        filepaths.push(filepath);
+        await analyzeApp(route);
       } catch (err) {
         console.log(`⚠️  Falló el análisis de ${route}: ${err.message}`);
         failed.push(route);
@@ -214,16 +872,33 @@ async function run() {
       failed.forEach(r => console.log(`   → ${r}`));
     }
 
-    if (filepaths.length > 0) {
-      runTests();
-    } else {
-      console.log('\n❌ No se generó ningún test. Revisa los errores anteriores.');
-    }
-
   } else {
     await analyzeApp(url);
-    runTests();
   }
+
+  // Primera ejecución de tests
+  const { output, hasFailed } = runTests();
+
+  // Si hubo fallos, intentar curarlos
+  if (hasFailed) {
+    const healResult = await healFailures(output, process.cwd());
+
+    if (healResult.healed > 0) {
+      console.log(`\n✅ Healing completado: ${healResult.healed} test(s) curado(s)`);
+      if (healResult.failed > 0) {
+        console.log(`⚠️  ${healResult.failed} fallo(s) no pudieron ser curados`);
+      }
+
+      // Re-ejecutar para confirmar que los parches funcionaron
+      rerunTests();
+    } else {
+      console.log('\n⚠️  No se pudieron curar los fallos automáticamente');
+      console.log('   Revisa los tests manualmente o mejora los selectores en el prompt');
+    }
+  }
+
+  console.log('\n📊 Reporte disponible en: playwright-report/index.html');
+  console.log('   Ejecuta "npx playwright show-report" para abrirlo\n');
 }
 
 run().catch(console.error);
@@ -235,6 +910,7 @@ const OpenAI = require('openai');
 const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
+const { detectFlow } = require('./flow-detector');
 
 dotenv.config();
 
@@ -336,13 +1012,16 @@ async function analyzeApp(url) {
       .substring(0, 3000);
   });
 
-  console.log('✅ Elementos encontrados');
-  console.log('🤖 Generando tests con IA...\n');
-
   await browser.close();
 
+  const flow = detectFlow(url, elements, pageInfo);
+
+  console.log(`✅ Elementos encontrados`);
+  console.log(`🧠 Flujo detectado: ${flow.type} (confianza: ${flow.confidence})`);
+  console.log(`🤖 Generando tests con IA...\n`);
+
   const pageCategory = detectPageCategory(url);
-  const result = await generateTests(url, elements, bodyHTML, pageInfo, pageCategory);
+  const result = await generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow);
 
   if (!result) {
     throw new Error(`No se pudo generar código válido para ${url}`);
@@ -352,7 +1031,7 @@ async function analyzeApp(url) {
   return filepath;
 }
 
-async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory) {
+async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow) {
   const categoryInstructions = {
     auth: `INSTRUCCIÓN ESPECIAL - PÁGINA CON AUTENTICACIÓN:
 - El beforeEach debe usar: await page.goto('${url.replace('://', '://admin:admin@')}');
@@ -424,6 +1103,19 @@ async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory) {
     restrictions.push('- La página tiene input de archivo: usa page.setInputFiles() SOLO para file inputs');
   }
 
+  const flowContext = flow.type !== 'unknown'
+    ? `
+CONTEXTO DE FLUJO (resultado del análisis semántico de la página):
+- Tipo de flujo detectado: ${flow.type}
+- Confianza de la detección: ${flow.confidence}
+- Escenarios críticos que DEBES cubrir en este orden de prioridad:
+${flow.testingHints.map((hint, i) => `  ${i + 1}. ${hint}`).join('\n')}
+
+Estos escenarios están ordenados por importancia de negocio. Priorizalos
+sobre cualquier otro test que puedas considerar generar.
+`
+    : '';
+
   const prompt = `
 Eres un experto en testing automatizado con Playwright v1.60.
 Genera tests válidos para la URL: ${url}
@@ -442,6 +1134,7 @@ Elementos con su estado actual:
 - Formularios: ${JSON.stringify(elements.forms)}
 - Links: ${JSON.stringify(elements.links)}
 
+${flowContext}
 ${specialInstruction ? `\n${specialInstruction}\n` : ''}
 ${restrictions.length > 0 ? '\nRESTRICCIONES ESPECÍFICAS:\n' + restrictions.join('\n') : ''}
 
@@ -464,6 +1157,9 @@ REGLAS CRÍTICAS:
 9. NO generes tests para links a elementalselenium.com.
 10. Para toHaveTitle() usa el título real proporcionado arriba, como string exacto.
 11. Cierra TODOS los bloques con llaves.
+12. Para verificar que un campo password enmascara el texto, usa SIEMPRE:
+    await expect(page.locator('input[type="password"]')).toHaveAttribute('type', 'password');
+    NUNCA verifiques el valor del campo ni uses .not.toBe() para esto.
 
 Estructura exacta:
 const { test, expect } = require('@playwright/test');
@@ -501,15 +1197,11 @@ test.describe('Nombre descriptivo', () => {
         temperature: 0.1
       });
     } catch (apiError) {
-      // Error de red, rate limit, clave inválida, etc.
-      // Se loguea el intento y se reintenta si quedan intentos
       console.log(`⚠️  Intento ${attempt}/${maxRetries}: error al llamar OpenAI — ${apiError.message}`);
       if (attempt === maxRetries) return null;
       continue;
     }
 
-    // La limpieza de markdown se hace aquí, una sola vez,
-    // antes de validar la sintaxis
     let code = response.choices[0].message.content
       .replace(/```javascript\n?/g, '')
       .replace(/```\n?/g, '');
@@ -532,8 +1224,6 @@ function saveTests(code, url) {
 
   fs.mkdirSync(path.dirname(filepath), { recursive: true });
 
-  // Toda la limpieza y corrección ocurre aquí, una sola vez,
-  // antes de escribir el archivo al disco
   let clean = code
     .replace(/```javascript\n?/g, '')
     .replace(/```\n?/g, '');

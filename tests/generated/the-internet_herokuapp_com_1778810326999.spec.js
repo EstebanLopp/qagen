@@ -19,18 +19,18 @@ test.describe('Login Page Tests', () => {
     await expect(page.locator('#flash')).toContainText('Your username is invalid!');
   });
 
-  test('Campo password enmascara el texto', async ({ page }) => {
+  test('Verifica que el campo password enmascara el texto', async ({ page }) => {
     await expect(page.locator('input[type="password"]')).toHaveAttribute('type', 'password');
   });
 
-  test('Redirección después del login exitoso', async ({ page }) => {
+  test('Verifica redirección después del login exitoso', async ({ page }) => {
     await page.fill('input[name="username"]', 'tomsmith');
     await page.fill('input[name="password"]', 'SuperSecretPassword!');
     await page.click('button[type="submit"]');
     await expect(page).toHaveURL(/.*secure/);
   });
 
-  test('Formulario no se envía vacío', async ({ page }) => {
+  test('El formulario no se envía vacío', async ({ page }) => {
     await page.click('button[type="submit"]');
     await expect(page.locator('#flash')).toContainText('Your username is invalid!');
   });

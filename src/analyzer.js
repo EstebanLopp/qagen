@@ -7,8 +7,6 @@ const { detectFlow } = require('./flow-detector');
 
 dotenv.config();
 
-// Validación temprana: si no hay API key, el error aparece aquí con
-// un mensaje claro, no en medio de la ejecución después de abrir browsers
 if (!process.env.OPENAI_API_KEY) {
   console.error('❌ Falta OPENAI_API_KEY en el archivo .env');
   process.exit(1);
@@ -121,7 +119,10 @@ async function analyzeApp(url) {
   }
 
   const filepath = saveTests(result.code, url);
-  return filepath;
+
+  // Retornamos tanto el filepath como el flow para que index.js
+  // pueda incluir la información del flujo en el reporte de sesión
+  return { filepath, flow };
 }
 
 async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow) {
