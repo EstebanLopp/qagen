@@ -4,18 +4,29 @@ const { analyzeApp } = require('./src/analyzer');
 const { crawlRoutes } = require('./src/crawler');
 const { healFailures } = require('./src/healer');
 const { generateReport } = require('./src/reporter');
+const { runConfigWizard } = require('./src/config');
 const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-const url = process.argv[2];
+const command = process.argv[2];
 const mode = process.argv[3] || 'single';
 
-if (!url) {
-  console.log('❌ Debes proporcionar una URL');
+// Comando de configuración — no necesita URL
+if (command === 'config') {
+  runConfigWizard().catch(console.error);
+  return;
+}
+
+// A partir de aquí, command es la URL
+const url = command;
+
+if (!url || url.startsWith('--')) {
+  console.log('\n🤖 QAgen — El agente de QA autónomo\n');
   console.log('Uso:');
-  console.log('  qagen https://ejemplo.com          (analiza y testea una página)');
-  console.log('  qagen https://ejemplo.com crawl    (detecta, analiza y testea todas las rutas)');
+  console.log('  qagen https://ejemplo.com          Analiza y testea una página');
+  console.log('  qagen https://ejemplo.com crawl    Detecta y testea todas las rutas');
+  console.log('  qagen config                       Configura tu API key de OpenAI\n');
   process.exit(1);
 }
 
@@ -27,11 +38,9 @@ if (!url) {
  */
 function clearPreviousTests() {
   const dir = path.join(process.cwd(), 'tests', 'generated');
-
   if (!fs.existsSync(dir)) return;
 
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.spec.js'));
-
   if (files.length > 0) {
     files.forEach(f => fs.unlinkSync(path.join(dir, f)));
     console.log(`🧹 ${files.length} test(s) de sesiones anteriores eliminado(s)\n`);
@@ -95,8 +104,6 @@ function rerunTests() {
 }
 
 async function run() {
-  // Limpiar tests de sesiones anteriores antes de empezar.
-  // Garantiza que solo se ejecutan los tests de esta sesión.
   clearPreviousTests();
 
   const session = {
@@ -140,11 +147,9 @@ async function run() {
     session.flow = result.flow;
   }
 
-  // Primera ejecución
   const { output, hasFailed } = runTests();
   session.firstOutput = output;
 
-  // Healing si hubo fallos
   if (hasFailed) {
     const healResult = await healFailures(output, process.cwd());
     session.healing = healResult;
@@ -160,7 +165,6 @@ async function run() {
     }
   }
 
-  // Generar reporte de sesión
   generateReport(session);
 
   console.log('\n📊 Reporte Playwright: playwright-report/index.html');

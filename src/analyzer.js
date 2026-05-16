@@ -4,17 +4,21 @@ const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
 const { detectFlow } = require('./flow-detector');
+const { resolveApiKey } = require('./config');
 
 dotenv.config();
 
-if (!process.env.OPENAI_API_KEY) {
-  console.error('❌ Falta OPENAI_API_KEY en el archivo .env');
+// Resolver la API key desde todas las fuentes posibles.
+// Orden: variable de entorno → config global → .env local
+const apiKey = resolveApiKey();
+
+if (!apiKey) {
+  console.error('\n❌ No se encontró una API key de OpenAI.');
+  console.error('   Ejecuta: qagen config\n');
   process.exit(1);
 }
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const openai = new OpenAI({ apiKey });
 
 function detectPageCategory(url) {
   const u = url.toLowerCase();
@@ -119,9 +123,6 @@ async function analyzeApp(url) {
   }
 
   const filepath = saveTests(result.code, url);
-
-  // Retornamos tanto el filepath como el flow para que index.js
-  // pueda incluir la información del flujo en el reporte de sesión
   return { filepath, flow };
 }
 
