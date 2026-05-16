@@ -1,9 +1,12 @@
+#!/usr/bin/env node
+
 const { analyzeApp } = require('./src/analyzer');
 const { crawlRoutes } = require('./src/crawler');
 const { healFailures } = require('./src/healer');
 const { generateReport } = require('./src/reporter');
 const { spawnSync } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
 const url = process.argv[2];
 const mode = process.argv[3] || 'single';
@@ -11,15 +14,33 @@ const mode = process.argv[3] || 'single';
 if (!url) {
   console.log('❌ Debes proporcionar una URL');
   console.log('Uso:');
-  console.log('  node index.js https://ejemplo.com          (analiza y testea una página)');
-  console.log('  node index.js https://ejemplo.com crawl    (detecta, analiza y testea todas las rutas)');
+  console.log('  qagen https://ejemplo.com          (analiza y testea una página)');
+  console.log('  qagen https://ejemplo.com crawl    (detecta, analiza y testea todas las rutas)');
   process.exit(1);
 }
 
 /**
+ * Elimina todos los archivos .spec.js de sesiones anteriores.
+ * Cada ejecución de QAgen es una sesión nueva — mezclar tests
+ * de sesiones distintas produce reportes incorrectos y tiempos
+ * de ejecución que crecen indefinidamente.
+ */
+function clearPreviousTests() {
+  const dir = path.join(process.cwd(), 'tests', 'generated');
+
+  if (!fs.existsSync(dir)) return;
+
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.spec.js'));
+
+  if (files.length > 0) {
+    files.forEach(f => fs.unlinkSync(path.join(dir, f)));
+    console.log(`🧹 ${files.length} test(s) de sesiones anteriores eliminado(s)\n`);
+  }
+}
+
+/**
  * Ejecuta los tests y devuelve el output como string además de
- * mostrarlo en consola. Necesitamos el texto para que el healer
- * y el reporter puedan procesarlo.
+ * mostrarlo en consola.
  */
 function runTests() {
   console.log('\n🧪 Ejecutando tests generados...\n');
@@ -74,8 +95,10 @@ function rerunTests() {
 }
 
 async function run() {
-  // Objeto de sesión que se va construyendo durante la ejecución
-  // y se pasa completo al reporter al final
+  // Limpiar tests de sesiones anteriores antes de empezar.
+  // Garantiza que solo se ejecutan los tests de esta sesión.
+  clearPreviousTests();
+
   const session = {
     url,
     startTime: Date.now(),
@@ -97,7 +120,6 @@ async function run() {
       console.log(`\n[${i + 1}/${routes.length}] ${route}`);
 
       try {
-        // En modo crawl usamos la última ruta analizada para el reporte
         const result = await analyzeApp(route);
         session.testsFile = path.basename(result.filepath);
         session.flow = result.flow;
@@ -113,7 +135,6 @@ async function run() {
     }
 
   } else {
-    // En modo single, analyzeApp devuelve filepath y flow
     const result = await analyzeApp(url);
     session.testsFile = path.basename(result.filepath);
     session.flow = result.flow;
@@ -133,7 +154,6 @@ async function run() {
       if (healResult.failed > 0) {
         console.log(`⚠️  ${healResult.failed} fallo(s) no pudieron ser curados`);
       }
-      // Re-ejecución para confirmar parches
       session.finalOutput = rerunTests();
     } else {
       console.log('\n⚠️  No se pudieron curar los fallos automáticamente');

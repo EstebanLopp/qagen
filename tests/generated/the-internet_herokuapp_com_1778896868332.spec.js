@@ -9,7 +9,7 @@ test.describe('Login Page Tests', () => {
     await page.fill('input[name="username"]', 'tomsmith');
     await page.fill('input[name="password"]', 'SuperSecretPassword!');
     await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(/.*secure/);
+    await expect(page).toHaveURL(/secure/);
   });
 
   test('Mensaje de error con credenciales inválidas', async ({ page }) => {
@@ -27,7 +27,7 @@ test.describe('Login Page Tests', () => {
     await page.fill('input[name="username"]', 'tomsmith');
     await page.fill('input[name="password"]', 'SuperSecretPassword!');
     await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(/.*secure/);
+    await expect(page).toHaveURL(/secure/);
   });
 
   test('El formulario no se envía vacío', async ({ page }) => {

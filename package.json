@@ -1,6 +1,9 @@
 {
   "name": "qagen",
   "version": "1.0.0",
+  "bin": {
+    "qagen": "./index.js"
+  },
   "description": "",
   "main": "index.js",
   "scripts": {
