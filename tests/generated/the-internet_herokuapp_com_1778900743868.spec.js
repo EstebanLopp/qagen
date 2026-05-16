@@ -30,8 +30,8 @@ test.describe('Login Page Tests', () => {
     await expect(page).toHaveURL(/.*secure/);
   });
 
-  test('El formulario no se envía vacío', async ({ page }) => {
+  test('Formulario no se envía vacío', async ({ page }) => {
     await page.click('button[type="submit"]');
-    await expect(page.locator('h4.subheader')).toHaveText('This is where you can log into the secure area. Enter tomsmith for the username and SuperSecretPassword! for the password. If the information is wrong you should see error messages.');
+    await expect(page.locator('#flash')).toContainText('Your username is invalid!');
   });
 });

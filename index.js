@@ -48,6 +48,40 @@ function clearPreviousTests() {
 }
 
 /**
+ * Verifica si existe playwright.config.js en el directorio actual.
+ * Si no existe, lo genera automáticamente con la configuración
+ * correcta para QAgen. Así el CLI funciona desde cualquier carpeta
+ * sin que el usuario tenga que configurar nada manualmente.
+ */
+function ensurePlaywrightConfig() {
+  const configPath = path.join(process.cwd(), 'playwright.config.js');
+  if (fs.existsSync(configPath)) return;
+
+  const config = `const { defineConfig } = require('@playwright/test');
+
+module.exports = defineConfig({
+  testDir: './tests/generated',
+  timeout: 30000,
+  retries: 1,
+  fullyParallel: false,
+  workers: 1,
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report', open: 'never' }]
+  ],
+  use: {
+    headless: true,
+    screenshot: 'only-on-failure',
+    video: 'off'
+  }
+});
+`;
+
+  fs.writeFileSync(configPath, config, 'utf8');
+  console.log('⚙️  playwright.config.js generado automáticamente\n');
+}
+
+/**
  * Ejecuta los tests y devuelve el output como string además de
  * mostrarlo en consola.
  */
@@ -105,6 +139,7 @@ function rerunTests() {
 
 async function run() {
   clearPreviousTests();
+  ensurePlaywrightConfig();
 
   const session = {
     url,
