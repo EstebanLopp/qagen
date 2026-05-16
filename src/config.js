@@ -138,4 +138,63 @@ async function runConfigWizard() {
   console.log('   Ya puedes usar: qagen https://tu-app.com\n');
 }
 
-module.exports = { resolveApiKey, runConfigWizard };
+/**
+ * Lee la memoria de selectores para un dominio específico.
+ * Devuelve un array de { wrong, correct, context } o vacío si no hay memoria.
+ *
+ * @param {string} domain  ej: "the-internet.herokuapp.com"
+ * @returns {Array<{wrong, correct, context}>}
+ */
+function readMemory(domain) {
+  try {
+    const memoryFile = path.join(CONFIG_DIR, 'memory.json');
+    if (!fs.existsSync(memoryFile)) return [];
+    const memory = JSON.parse(fs.readFileSync(memoryFile, 'utf8'));
+    return memory[domain]?.selectors || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Guarda un selector curado en la memoria del dominio.
+ * Si ya existe una corrección para ese selector incorrecto, la actualiza.
+ *
+ * @param {string} domain
+ * @param {string} wrong    selector que falló
+ * @param {string} correct  selector correcto encontrado en DOM
+ * @param {string} context  descripción de cuándo aplica esta corrección
+ */
+
+function saveToMemory(domain, wrong, correct, context) {
+  try {
+    const memoryFile = path.join(CONFIG_DIR, 'memory.json');
+    let memory = {};
+
+    if (fs.existsSync(memoryFile)) {
+      memory = JSON.parse(fs.readFileSync(memoryFile, 'utf8'));
+    }
+
+    if (!memory[domain]) {
+      memory[domain] = { selectors: [] };
+    }
+
+    // Actualizar si ya existe, agregar si es nuevo
+    const existing = memory[domain].selectors.findIndex(s => s.wrong === wrong);
+    if (existing >= 0) {
+      memory[domain].selectors[existing] = { wrong, correct, context, assertion: 'toContainText' };
+    } else {
+      memory[domain].selectors.push({ wrong, correct, context, assertion: 'toContainText' });
+    }
+
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+
+    fs.writeFileSync(memoryFile, JSON.stringify(memory, null, 2), 'utf8');
+  } catch (err) {
+    console.log(`⚠️  No se pudo guardar en memoria: ${err.message}`);
+  }
+}
+
+module.exports = { resolveApiKey, runConfigWizard, readMemory, saveToMemory };

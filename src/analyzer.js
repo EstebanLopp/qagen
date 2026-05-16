@@ -4,7 +4,7 @@ const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
 const { detectFlow } = require('./flow-detector');
-const { resolveApiKey } = require('./config');
+const { resolveApiKey, readMemory } = require('./config');
 
 dotenv.config();
 
@@ -211,6 +211,28 @@ sobre cualquier otro test que puedas considerar generar.
 `
     : '';
 
+  // Leer memoria de selectores conocidos para este dominio.
+  // Si el healer curó selectores en sesiones anteriores, los pasamos
+  // al prompt para que la IA no cometa los mismos errores.
+  const domain = new URL(url).hostname;
+  const knownSelectors = readMemory(domain);
+
+  const memoryContext = knownSelectors.length > 0
+    ? `
+  MEMORIA DE SELECTORES (correcciones aprendidas de sesiones anteriores en este dominio):
+  ${knownSelectors.map(s => `- NUNCA uses "${s.wrong}" para "${s.context}". Usa locator("${s.correct}").${s.assertion || 'toContainText'} en su lugar.`).join('\n')}
+
+  Esta información viene de errores reales detectados y corregidos automáticamente.
+  Respétala estrictamente.
+  `
+    : '';
+
+  // Si hay memoria, lo mostramos en consola para que el usuario sepa
+  // que el agente está aplicando conocimiento previo
+  if (knownSelectors.length > 0) {
+    console.log(`🧠 Memoria activa: ${knownSelectors.length} selector(es) conocido(s) para ${domain}\n`);
+  }
+
   const prompt = `
 Eres un experto en testing automatizado con Playwright v1.60.
 Genera tests válidos para la URL: ${url}
@@ -230,6 +252,7 @@ Elementos con su estado actual:
 - Links: ${JSON.stringify(elements.links)}
 
 ${flowContext}
+${memoryContext}
 ${specialInstruction ? `\n${specialInstruction}\n` : ''}
 ${restrictions.length > 0 ? '\nRESTRICCIONES ESPECÍFICAS:\n' + restrictions.join('\n') : ''}
 

@@ -17,6 +17,7 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const { saveToMemory } = require('./config');
 
 /**
  * Elimina los códigos de escape ANSI del output de Playwright.
@@ -277,6 +278,12 @@ async function healFailures(playwrightOutput, cwd) {
       if (patched) {
         console.log(`   ✅ Curado: locator('${locator}').toHaveText → locator('${newSelector}').toContainText`);
         healed++;
+
+        // Guardar en memoria para que la próxima vez el generador
+        // ya sepa qué selector usar en este dominio
+        const domain = new URL(url).hostname;
+        saveToMemory(domain, locator, newSelector, `mensaje después de acción en ${url}`);
+        
         details.push(`✅ ${path.basename(filePath)}:${line} — ${locator} → ${newSelector}`);
       } else {
         failed++;
