@@ -1,74 +1,81 @@
-# QAgen 🤖
+# QAgen
 
-Agente de QA autónomo que analiza tu aplicación web, genera tests de Playwright con IA, los ejecuta y se repara solo cuando fallan.
+**Autonomous QA agent for web applications.**
 
-```
-qagen https://tu-app.com
-```
+QAgen analyzes your app, generates Playwright tests using AI, executes them, and self-heals broken selectors — without manual intervention.
 
 ---
 
-## Qué hace
+## The problem
 
-1. **Analiza** — Detecta todos los elementos interactivos de la página
-2. **Entiende** — Identifica el flujo crítico: login, registro, checkout, etc.
-3. **Genera** — Crea tests de Playwright automáticamente con IA
-4. **Ejecuta** — Corre los tests y reporta resultados
-5. **Se repara** — Si un selector falla, lo busca en el DOM real y lo corrige
-6. **Aprende** — Recuerda las correcciones para no repetir los mismos errores
+Most small development teams don't have dedicated QA. They write manual tests, break them constantly with UI changes, and spend more time maintaining automation than building product. With fast deployment cycles, this gets worse.
+
+## How QAgen works
+
+QAgen operates as an autonomous QA agent with four core capabilities:
+
+**1. Semantic flow detection**
+QAgen analyzes the DOM and identifies the critical business flow of each page — login, registration, checkout, search, CRUD forms, dashboards — before generating a single test. This means tests are generated with business context, not just element detection.
+
+**2. AI-powered test generation**
+Based on the detected flow and real DOM state, QAgen generates Playwright test files targeting the scenarios that matter most: successful flows, error states, field validation, redirects.
+
+**3. Autonomous self-healing**
+When a test fails due to a broken selector, QAgen opens a headless browser, reproduces the exact actions that caused the failure, finds the correct element in the live DOM, and patches the test file automatically.
+
+**4. Contextual memory**
+Healed selectors are stored per domain in `~/.qagen/memory.json`. On subsequent runs against the same application, the AI already knows which selectors to use — eliminating recurring failures.
 
 ---
 
-## Requisitos
+## Requirements
 
 - Node.js 18+
-- Una API key de OpenAI ([obtener aquí](https://platform.openai.com/api-keys))
+- OpenAI API key ([get one here](https://platform.openai.com/api-keys))
+- Playwright installed in your project (`npm install @playwright/test && npx playwright install chromium`)
 
 ---
 
-## Instalación
+## Installation
 
 ```bash
-npm install -g qagen
-npx playwright install chromium
+npm install -g @estebanlopp/qagen
 ```
 
----
-
-## Configuración
-
-La primera vez que uses QAgen, configura tu API key:
+On first use, configure your OpenAI API key:
 
 ```bash
 qagen config
 ```
 
-La key se guarda en `~/.qagen/config.json` y funciona desde cualquier directorio.
+The key is stored globally in `~/.qagen/config.json` and works from any directory.
 
 ---
 
-## Uso
+## Usage
 
-**Analizar una página:**
+Analyze a single page:
+
 ```bash
-qagen https://tu-app.com/login
+qagen https://your-app.com/login
 ```
 
-**Analizar toda la aplicación:**
+Crawl and analyze the entire application:
+
 ```bash
-qagen https://tu-app.com crawl
+qagen https://your-app.com crawl
 ```
 
-QAgen crea una carpeta `.qagen/` en tu directorio actual con todos los archivos generados. Agrega `.qagen/` a tu `.gitignore` (QAgen lo hace automáticamente si ya tienes un `.gitignore`).
+QAgen creates a `.qagen/` folder in your current directory containing all generated files. If a `.gitignore` file exists, `.qagen/` is added automatically.
 
 ---
 
-## Reportes
+## Output
 
-Después de cada ejecución se generan dos reportes:
+After each run, two reports are generated:
 
-- **`.qagen/qagen-report.html`** — Resumen de la sesión: flujo detectado, tests, healing
-- **`.qagen/playwright-report/`** — Reporte detallado de Playwright
+- `.qagen/qagen-report.html` — Session summary: detected flow, test results, self-healing activity
+- `.qagen/playwright-report/` — Full Playwright HTML report with screenshots on failure
 
 ```bash
 npx playwright show-report .qagen/playwright-report
@@ -76,47 +83,39 @@ npx playwright show-report .qagen/playwright-report
 
 ---
 
-## Cómo funciona el auto-healing
-
-Cuando un test falla porque un selector no encuentra el elemento correcto, QAgen:
-
-1. Abre el browser en modo headless
-2. Reproduce las mismas acciones del test fallido
-3. Busca el texto esperado en el DOM real
-4. Reemplaza el selector incorrecto por el correcto
-5. Guarda la corrección en `~/.qagen/memory.json`
-
-La próxima vez que analices la misma aplicación, la IA ya sabe qué selectores usar.
-
----
-
-## Estructura generada
+## What gets generated
 
 ```
-tu-proyecto/
+your-project/
 └── .qagen/
-    ├── tests/generated/      Tests generados por la IA
-    ├── playwright-report/    Reporte detallado de Playwright
-    ├── test-results/         Screenshots de tests fallidos
-    ├── playwright.config.js  Configuración de Playwright (auto-generada)
-    └── qagen-report.html     Reporte de sesión de QAgen
+    ├── tests/generated/       AI-generated test files
+    ├── playwright-report/     Detailed Playwright report
+    ├── test-results/          Screenshots of failed tests
+    ├── playwright.config.js   Auto-generated Playwright config
+    └── qagen-report.html      QAgen session report
 ```
 
 ---
 
-## Estado del proyecto
+## Current status
 
-QAgen está en desarrollo activo. Actualmente en Fase 1 — MVP CLI.
+QAgen is in active development. Current version: `0.1.x` — MVP CLI, tested against real web applications.
 
-**Funciona hoy:**
-- Crawler automático de rutas
-- Detección de flujos críticos (login, registro, checkout, búsqueda, formularios)
-- Generación de tests con IA
-- Auto-healing de selectores rotos
-- Memoria contextual por dominio
-- Reporte HTML de sesión
+Working today:
+- Automatic route crawling
+- Critical flow detection (login, register, checkout, search, forms, dashboard)
+- AI test generation with business context
+- Autonomous self-healing with live DOM inspection
+- Contextual memory per domain
+- Root cause analysis for unresolved failures
+- Session HTML report
 
-**En desarrollo:**
-- Análisis de causa raíz de fallos
-- Integración con CI/CD
-- Dashboard web
+In progress:
+- CI/CD integration
+- Web dashboard
+
+---
+
+## License
+
+ISC
