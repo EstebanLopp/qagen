@@ -1,7 +1,7 @@
 const { chromium } = require('playwright');
 
 async function crawlRoutes(baseUrl) {
-  console.log(`\n🕷️  Detectando rutas en: ${baseUrl}\n`);
+  console.log(`\nCrawling routes: ${baseUrl}\n`);
 
   const browser = await chromium.launch();
   const page = await browser.newPage();
@@ -30,8 +30,8 @@ async function crawlRoutes(baseUrl) {
 
   await browser.close();
 
-  console.log(`✅ Rutas detectadas: ${routes.length}`);
-  routes.forEach(r => console.log(`   → ${r}`));
+  console.log(`Found ${routes.length} route(s):`);
+  routes.forEach(r => console.log(`  ${r}`));
 
   return routes;
 }

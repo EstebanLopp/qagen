@@ -1,0 +1,2246 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+.npmignore
+cli.js
+index.js
+package.json
+README.md
+src/analyzer.js
+src/config.js
+src/crawler.js
+src/failure-analyzer.js
+src/flow-detector.js
+src/healer.js
+src/reporter.js
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".npmignore">
+# Archivos de desarrollo
+repomix-output.xml
+*.xml
+*.log
+
+# Carpetas de desarrollo
+.qagen/
+test-results/
+playwright-report/
+tests/
+
+# Archivos de configuración local
+.env
+.env.*
+playwright.config.js
+
+# Archivos temporales
+*.tgz
+</file>
+
+<file path="cli.js">
+#!/usr/bin/env node
+require('./index.js');
+</file>
+
+<file path="src/crawler.js">
+const { chromium } = require('playwright');
+
+async function crawlRoutes(baseUrl) {
+  console.log(`\n🕷️  Detectando rutas en: ${baseUrl}\n`);
+
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
+  await page.goto(baseUrl);
+
+  const routes = await page.evaluate((base) => {
+    const found = new Set();
+    found.add(base);
+
+    document.querySelectorAll('a').forEach(el => {
+      const href = el.href;
+      if (
+        href &&
+        href.startsWith(base) &&
+        !href.includes('#') &&
+        !href.includes('mailto') &&
+        !href.includes('javascript')
+      ) {
+        found.add(href);
+      }
+    });
+
+    return Array.from(found);
+  }, baseUrl);
+
+  await browser.close();
+
+  console.log(`✅ Rutas detectadas: ${routes.length}`);
+  routes.forEach(r => console.log(`   → ${r}`));
+
+  return routes;
+}
+
+module.exports = { crawlRoutes };
+</file>
+
+<file path="src/failure-analyzer.js">
+/**
+ * failure-analyzer.js
+ *
+ * Analiza fallos de tests que el healer no pudo curar automáticamente.
+ * Usa IA para explicar en lenguaje natural qué salió mal y por qué,
+ * clasificar el tipo de fallo, y sugerir una acción concreta.
+ *
+ * Tipos de fallo que puede clasificar:
+ * - selector_incorrecto: el elemento existe pero el selector no lo encuentra
+ * - texto_incorrecto: el selector es correcto pero el texto esperado no coincide
+ * - elemento_ausente: el elemento no existe en la página en ese momento
+ * - timing: el elemento existe pero no estaba listo cuando se verificó
+ * - logica_de_test: el test está mal construido independientemente de la app
+ * - bug_real: el comportamiento de la app no es el esperado (posible bug)
+ * - desconocido: no hay suficiente información para clasificar
+ */
+
+const OpenAI = require('openai');
+const { resolveApiKey } = require('./config');
+
+const apiKey = resolveApiKey();
+const openai = apiKey ? new OpenAI({ apiKey }) : null;
+
+/**
+ * Parsea el output de Playwright para extraer los bloques de error
+ * completos — no solo el mensaje principal sino todo el contexto.
+ *
+ * @param {string} playwrightOutput
+ * @returns {Array<{testName, error, locator, expected, received, file, line}>}
+ */
+function extractFailureDetails(playwrightOutput) {
+  // Limpiar códigos ANSI
+  // eslint-disable-next-line no-control-regex
+  const clean = playwrightOutput.replace(/\u001b\[[0-9;]*m/g, '');
+  const failures = [];
+
+  // Separar bloques de error por numeración de Playwright
+  const errorBlocks = clean.split(/\n\s*\d+\) /);
+
+  for (const block of errorBlocks) {
+    if (!block.includes('Error:')) continue;
+
+    // Extraer nombre del test desde la primera línea del bloque
+    const testNameMatch = block.match(/^(.+?)\n/);
+    const testName = testNameMatch ? testNameMatch[1].trim() : 'Test desconocido';
+
+    // Extraer el mensaje de error principal
+    const errorMatch = block.match(/Error:\s+(.+?)(?:\n|$)/);
+    const error = errorMatch ? errorMatch[1].trim() : '';
+
+    // Extraer locator si existe
+    const locatorMatch = block.match(/Locator:\s+(.+?)(?:\n|$)/);
+    const locator = locatorMatch ? locatorMatch[1].trim() : '';
+
+    // Extraer valor esperado
+    const expectedMatch = block.match(/Expected:\s+"([^"]+)"/);
+    const expected = expectedMatch ? expectedMatch[1] : '';
+
+    // Extraer valor recibido
+    const receivedMatch = block.match(/Received:\s+"([^"]+)"/);
+    const received = receivedMatch ? receivedMatch[1] : '';
+
+    // Extraer archivo y línea
+    const fileMatch = block.match(/at\s+([^\n]+\.spec\.js):(\d+):/);
+    const file = fileMatch ? fileMatch[1].trim() : '';
+    const line = fileMatch ? parseInt(fileMatch[2], 10) : 0;
+
+    // Extraer el fragmento de código donde ocurrió el error
+    const codeMatch = block.match(/>\s+\d+\s+\|(.+?)(?:\n|$)/);
+    const codeLine = codeMatch ? codeMatch[1].trim() : '';
+
+    // Solo incluir si tenemos suficiente información
+    if (error && (locator || file)) {
+      failures.push({ testName, error, locator, expected, received, file, line, codeLine });
+    }
+  }
+
+  // Deduplicar por archivo+línea (retries generan duplicados)
+  const seen = new Set();
+  return failures.filter(f => {
+    const key = `${f.file}:${f.line}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Analiza un fallo individual con IA y devuelve una explicación estructurada.
+ *
+ * @param {object} failure  datos del fallo extraídos por extractFailureDetails
+ * @param {string} url      URL de la página que se estaba testeando
+ * @returns {Promise<{type, explanation, recommendation}>}
+ */
+async function analyzeFailure(failure, url) {
+  // Si no hay OpenAI disponible, devolver análisis básico sin IA
+  if (!openai) {
+    return buildBasicAnalysis(failure);
+  }
+
+  const prompt = `Eres un experto en testing automatizado con Playwright. Analiza este fallo de test y explica qué salió mal.
+
+URL testeada: ${url}
+Nombre del test: ${failure.testName}
+Error: ${failure.error}
+Locator usado: ${failure.locator || 'no disponible'}
+Texto esperado: ${failure.expected || 'no disponible'}
+Texto recibido: ${failure.received || 'no disponible'}
+Línea de código: ${failure.codeLine || 'no disponible'}
+
+Responde ÚNICAMENTE con un objeto JSON con esta estructura exacta, sin markdown ni texto adicional:
+{
+  "type": "selector_incorrecto|texto_incorrecto|elemento_ausente|timing|logica_de_test|bug_real|desconocido",
+  "explanation": "Explicación clara en español de qué salió mal y por qué (máximo 2 oraciones)",
+  "recommendation": "Acción concreta que el desarrollador debe tomar (máximo 1 oración)"
+}`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'Eres un analizador de fallos de tests. Respondes ÚNICAMENTE con JSON válido, sin markdown ni texto adicional.'
+        },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 300,
+      temperature: 0.1
+    });
+
+    const raw = response.choices[0].message.content.trim();
+    const parsed = JSON.parse(raw);
+
+    // Validar que tiene los campos esperados
+    if (parsed.type && parsed.explanation && parsed.recommendation) {
+      return parsed;
+    }
+
+    return buildBasicAnalysis(failure);
+
+  } catch {
+    // Si la IA falla, usar análisis basado en reglas
+    return buildBasicAnalysis(failure);
+  }
+}
+
+/**
+ * Análisis básico basado en reglas cuando la IA no está disponible.
+ * Detecta patrones comunes sin necesidad de llamada a la API.
+ *
+ * @param {object} failure
+ * @returns {{type, explanation, recommendation}}
+ */
+function buildBasicAnalysis(failure) {
+  const { error, locator, expected, received } = failure;
+
+  // Texto esperado existe pero en lugar diferente
+  if (error.includes('toHaveText') && received && received.length > 0) {
+    return {
+      type: 'selector_incorrecto',
+      explanation: `El elemento "${locator}" contiene texto diferente al esperado. El texto buscado puede estar en otro elemento de la página.`,
+      recommendation: `Verificar qué elemento contiene el texto "${expected}" después de la acción.`
+    };
+  }
+
+  // Elemento no encontrado en el tiempo límite
+  if (error.includes('Timeout') || error.includes('waiting for')) {
+    return {
+      type: 'timing',
+      explanation: `El elemento "${locator}" no estuvo disponible dentro del tiempo límite. Puede ser un problema de carga asíncrona o el elemento no existe en esta ruta.`,
+      recommendation: 'Agregar un waitForSelector explícito o verificar que el elemento existe en esta página.'
+    };
+  }
+
+  // Error de locator no encontrado
+  if (error.includes('locator') && error.includes('not found')) {
+    return {
+      type: 'elemento_ausente',
+      explanation: `El selector "${locator}" no encontró ningún elemento en la página. El elemento puede no existir o tener un selector diferente.`,
+      recommendation: 'Inspeccionar el HTML de la página para encontrar el selector correcto.'
+    };
+  }
+
+  // Fallo genérico
+  return {
+    type: 'desconocido',
+    explanation: `El test falló con el error: ${error.substring(0, 150)}`,
+    recommendation: 'Revisar el test manualmente para determinar la causa exacta del fallo.'
+  };
+}
+
+/**
+ * Función principal. Recibe el output de Playwright y los fallos
+ * que el healer no pudo curar, analiza cada uno con IA, y devuelve
+ * un array de análisis enriquecidos.
+ *
+ * @param {string} playwrightOutput  output completo de Playwright
+ * @param {string} url               URL que se estaba testeando
+ * @param {number} healedCount       cuántos fallos ya curó el healer
+ * @returns {Promise<Array<{testName, type, explanation, recommendation}>>}
+ */
+async function analyzeUnresolvedFailures(playwrightOutput, url, healedCount) {
+  const failures = extractFailureDetails(playwrightOutput);
+
+  // Si el healer curó todos los fallos, no hay nada que analizar
+  if (failures.length === 0) return [];
+
+  // Si el healer curó algunos, los fallos que quedan son los no curables.
+  // extractFailureDetails ya deduplica retries, así que cada fallo
+  // aparece una sola vez.
+  console.log(`\n🔬 Analizando ${failures.length} fallo(s) no resuelto(s)...\n`);
+
+  const analyses = [];
+
+  for (const failure of failures) {
+    const analysis = await analyzeFailure(failure, url);
+    analyses.push({
+      testName: failure.testName,
+      file: failure.file,
+      line: failure.line,
+      ...analysis
+    });
+
+    // Mostrar en consola para feedback inmediato
+    const typeLabels = {
+      selector_incorrecto: '🎯 Selector incorrecto',
+      texto_incorrecto:    '📝 Texto incorrecto',
+      elemento_ausente:    '👻 Elemento ausente',
+      timing:              '⏱️  Timing',
+      logica_de_test:      '🧠 Lógica del test',
+      bug_real:            '🐛 Posible bug real',
+      desconocido:         '❓ Desconocido'
+    };
+
+    console.log(`   ${typeLabels[analysis.type] || '❓ Desconocido'}`);
+    console.log(`   ${analysis.explanation}`);
+    console.log(`   → ${analysis.recommendation}\n`);
+  }
+
+  return analyses;
+}
+
+module.exports = { analyzeUnresolvedFailures };
+</file>
+
+<file path="src/flow-detector.js">
+/**
+ * flow-detector.js
+ *
+ * Detecta el tipo de flujo crítico de una página web a partir de las
+ * señales del DOM que ya recopiló el analyzer: inputs, botones, links,
+ * título, H1 y URL.
+ *
+ * Devuelve un objeto con:
+ *   - type: string  → el flujo detectado
+ *   - confidence: 'high' | 'medium' | 'low'
+ *   - signals: string[]  → las señales concretas que activaron la detección
+ *   - testingHints: string[]  → qué debe priorizar el generador de tests
+ */
+
+// Cada flujo tiene una lista de señales. Cada señal tiene un peso (points).
+// El detector acumula puntos por señal encontrada y el flujo con más puntos gana.
+const FLOW_DEFINITIONS = {
+  login: {
+    signals: [
+      // Señales de URL
+      { type: 'url',    pattern: /login|signin|sign-in|acceso|entrar/i,         points: 3 },
+      // Señales de texto visible (título, H1, H2, botones)
+      { type: 'text',   pattern: /log\s?in|sign\s?in|iniciar sesi[oó]n/i,       points: 3 },
+      // Señales de inputs específicos
+      { type: 'input',  name: /user|email|correo/i,                              points: 2 },
+      { type: 'input',  name: /pass|password|contrase[ñn]a/i,                   points: 3 },
+      // Señales de botones
+      { type: 'button', text: /log\s?in|sign\s?in|entrar|acceder|ingresar/i,    points: 3 },
+      // Penalización: si hay campo de confirmación de contraseña, probablemente es registro
+      { type: 'input',  name: /confirm|repeat|verificar/i,                       points: -3 },
+    ],
+    testingHints: [
+      'Testea login exitoso con credenciales válidas',
+      'Testea mensaje de error con credenciales inválidas',
+      'Verifica que el campo password enmascara el texto (type=password)',
+      'Verifica redirección después del login exitoso',
+      'Testea que el formulario no se envía vacío',
+    ]
+  },
+
+  register: {
+    signals: [
+      { type: 'url',    pattern: /register|signup|sign-up|registro|crear|new.?account/i, points: 3 },
+      { type: 'text',   pattern: /register|sign\s?up|crear cuenta|nuevo usuario/i,        points: 3 },
+      { type: 'input',  name: /confirm|repeat|verificar/i,                                points: 3 },
+      { type: 'input',  name: /name|nombre/i,                                             points: 2 },
+      { type: 'input',  name: /email|correo/i,                                            points: 1 },
+      { type: 'input',  name: /pass|password/i,                                           points: 1 },
+      { type: 'button', text: /register|sign\s?up|crear|registrar|continue/i,             points: 3 },
+    ],
+    testingHints: [
+      'Testea registro exitoso con datos válidos',
+      'Verifica validación de email con formato inválido',
+      'Testea que las contraseñas deben coincidir',
+      'Verifica campos requeridos al enviar vacío',
+      'Testea que el usuario ya registrado muestra error',
+    ]
+  },
+
+  checkout: {
+    signals: [
+      { type: 'url',    pattern: /checkout|cart|carrito|pago|payment|order/i,    points: 3 },
+      { type: 'text',   pattern: /checkout|cart|carrito|payment|order|pago/i,    points: 3 },
+      { type: 'input',  name: /card|tarjeta|credit|cvv|expir/i,                  points: 4 },
+      { type: 'input',  name: /address|direcci[oó]n|zip|postal/i,                points: 3 },
+      { type: 'button', text: /pay|pagar|comprar|buy|purchase|confirmar|order/i, points: 4 },
+      { type: 'text',   pattern: /\$|€|total|subtotal|precio/i,                  points: 2 },
+    ],
+    testingHints: [
+      'Verifica que el total se calcula correctamente',
+      'Testea validación de número de tarjeta inválido',
+      'Verifica que campos de dirección son requeridos',
+      'Testea el flujo completo de compra',
+      'Verifica mensaje de confirmación después del pago',
+    ]
+  },
+
+  search: {
+    signals: [
+      { type: 'url',    pattern: /search|buscar|query|q=/i,                      points: 2 },
+      { type: 'text',   pattern: /search|buscar|encuentra|find/i,                points: 2 },
+      { type: 'input',  name: /search|query|buscar|q/i,                          points: 3 },
+      { type: 'input',  placeholder: /search|buscar|encuentra/i,                 points: 3 },
+      { type: 'button', text: /search|buscar|find|go/i,                          points: 2 },
+    ],
+    testingHints: [
+      'Testea búsqueda con término válido y verifica resultados',
+      'Testea búsqueda vacía',
+      'Testea búsqueda con término sin resultados',
+      'Verifica que el término buscado aparece en los resultados',
+    ]
+  },
+
+  'crud-form': {
+    signals: [
+      { type: 'url',    pattern: /new|create|edit|update|add|nuevo|crear|editar/i, points: 2 },
+      { type: 'text',   pattern: /new|create|edit|update|add|nuevo|crear|editar/i, points: 2 },
+      // Forms con múltiples inputs pero sin señales de login/registro/checkout
+      { type: 'form',   minInputs: 3,                                              points: 2 },
+      { type: 'button', text: /save|guardar|submit|send|create|update|add/i,       points: 3 },
+      { type: 'button', text: /cancel|cancelar|delete|eliminar/i,                  points: 1 },
+    ],
+    testingHints: [
+      'Testea creación exitosa con datos válidos',
+      'Verifica validación de campos requeridos',
+      'Testea cancelar/descartar cambios',
+      'Verifica que los datos guardados se muestran correctamente',
+    ]
+  },
+
+  dashboard: {
+    signals: [
+      { type: 'url',    pattern: /dashboard|panel|home|inicio|overview|main/i,   points: 2 },
+      { type: 'text',   pattern: /dashboard|panel|resumen|overview|bienvenido/i, points: 2 },
+      // Dashboards tienen muchos links de navegación pero pocos forms
+      { type: 'link',   minLinks: 5,                                              points: 2 },
+      { type: 'form',   maxInputs: 1,                                             points: 1 },
+    ],
+    testingHints: [
+      'Verifica que los elementos principales de navegación son visibles',
+      'Verifica que el usuario autenticado ve su información',
+      'Testea que los links de navegación funcionan',
+    ]
+  }
+};
+
+/**
+ * Normaliza todo el texto visible de la página en un solo string
+ * para hacer matching más fácil contra los patrones de señales de texto.
+ */
+function buildTextCorpus(pageInfo, elements) {
+  const parts = [
+    pageInfo.title || '',
+    pageInfo.h1 || '',
+    pageInfo.h2 || '',
+    ...elements.buttons.map(b => b.text || ''),
+    ...elements.links.map(l => l.text || ''),
+  ];
+  return parts.join(' ');
+}
+
+/**
+ * Evalúa cuántos puntos acumula un flujo dado para esta página.
+ * Retorna { score, signals } donde signals son las señales activadas.
+ */
+function scoreFlow(flowName, definition, url, elements, pageInfo) {
+  let score = 0;
+  const activatedSignals = [];
+  const textCorpus = buildTextCorpus(pageInfo, elements);
+
+  for (const signal of definition.signals) {
+
+    if (signal.type === 'url') {
+      if (signal.pattern.test(url)) {
+        score += signal.points;
+        activatedSignals.push(`URL contiene patrón "${signal.pattern.source}" (+${signal.points})`);
+      }
+    }
+
+    else if (signal.type === 'text') {
+      if (signal.pattern.test(textCorpus)) {
+        score += signal.points;
+        activatedSignals.push(`Texto visible contiene "${signal.pattern.source}" (+${signal.points})`);
+      }
+    }
+
+    else if (signal.type === 'input') {
+      const matchingInputs = elements.inputs.filter(input => {
+        const nameMatch = signal.name
+          ? signal.name.test(input.name || '') || signal.name.test(input.placeholder || '')
+          : false;
+        const placeholderMatch = signal.placeholder
+          ? signal.placeholder.test(input.placeholder || '')
+          : false;
+        return nameMatch || placeholderMatch;
+      });
+
+      if (matchingInputs.length > 0) {
+        score += signal.points;
+        const direction = signal.points > 0 ? `+${signal.points}` : signal.points;
+        activatedSignals.push(`Input con nombre/placeholder "${signal.name?.source || signal.placeholder?.source}" (${direction})`);
+      }
+    }
+
+    else if (signal.type === 'button') {
+      const matchingButtons = elements.buttons.filter(b =>
+        signal.text.test(b.text || '')
+      );
+      if (matchingButtons.length > 0) {
+        score += signal.points;
+        activatedSignals.push(`Botón con texto "${signal.text.source}" (+${signal.points})`);
+      }
+    }
+
+    else if (signal.type === 'form') {
+      const inputCount = elements.inputs.length;
+      if (signal.minInputs !== undefined && inputCount >= signal.minInputs) {
+        score += signal.points;
+        activatedSignals.push(`Formulario con ${inputCount} inputs >= ${signal.minInputs} (+${signal.points})`);
+      }
+      if (signal.maxInputs !== undefined && inputCount <= signal.maxInputs) {
+        score += signal.points;
+        activatedSignals.push(`Formulario con ${inputCount} inputs <= ${signal.maxInputs} (+${signal.points})`);
+      }
+    }
+
+    else if (signal.type === 'link') {
+      const linkCount = elements.links.length;
+      if (signal.minLinks !== undefined && linkCount >= signal.minLinks) {
+        score += signal.points;
+        activatedSignals.push(`${linkCount} links >= ${signal.minLinks} (+${signal.points})`);
+      }
+    }
+  }
+
+  return { score, signals: activatedSignals };
+}
+
+/**
+ * Función principal. Recibe los datos ya recolectados por el analyzer
+ * y devuelve el flujo detectado con su contexto.
+ *
+ * @param {string} url
+ * @param {object} elements  - { buttons, inputs, forms, links }
+ * @param {object} pageInfo  - { title, h1, h2, ... }
+ * @returns {{ type, confidence, signals, testingHints }}
+ */
+function detectFlow(url, elements, pageInfo) {
+  const results = [];
+
+  for (const [flowName, definition] of Object.entries(FLOW_DEFINITIONS)) {
+    const { score, signals } = scoreFlow(flowName, definition, url, elements, pageInfo);
+    if (score > 0) {
+      results.push({ type: flowName, score, signals, testingHints: definition.testingHints });
+    }
+  }
+
+  // Ordenar por score descendente
+  results.sort((a, b) => b.score - a.score);
+
+  if (results.length === 0 || results[0].score < 2) {
+    return {
+      type: 'unknown',
+      confidence: 'low',
+      signals: ['No se encontraron señales suficientes para clasificar el flujo'],
+      testingHints: [
+        'Verifica que la página carga correctamente',
+        'Testea los elementos interactivos visibles',
+        'Verifica el título de la página',
+      ]
+    };
+  }
+
+  const winner = results[0];
+  const runnerUp = results[1];
+
+  // Confianza alta: el ganador tiene ventaja clara sobre el segundo
+  // Confianza media: hay competencia entre dos flujos
+  // Confianza baja: score bajo o muy reñido
+  let confidence;
+  if (winner.score >= 6 && (!runnerUp || winner.score >= runnerUp.score * 1.5)) {
+    confidence = 'high';
+  } else if (winner.score >= 3) {
+    confidence = 'medium';
+  } else {
+    confidence = 'low';
+  }
+
+  return {
+    type: winner.type,
+    confidence,
+    signals: winner.signals,
+    testingHints: winner.testingHints
+  };
+}
+
+module.exports = { detectFlow };
+</file>
+
+<file path="README.md">
+# QAgen
+
+**Autonomous QA agent for web applications.**
+
+QAgen analyzes your app, generates Playwright tests using AI, executes them, and self-heals broken selectors — without manual intervention.
+
+---
+
+## The problem
+
+Most small development teams don't have dedicated QA. They write manual tests, break them constantly with UI changes, and spend more time maintaining automation than building product. With fast deployment cycles, this gets worse.
+
+## How QAgen works
+
+QAgen operates as an autonomous QA agent with four core capabilities:
+
+**1. Semantic flow detection**
+QAgen analyzes the DOM and identifies the critical business flow of each page — login, registration, checkout, search, CRUD forms, dashboards — before generating a single test. This means tests are generated with business context, not just element detection.
+
+**2. AI-powered test generation**
+Based on the detected flow and real DOM state, QAgen generates Playwright test files targeting the scenarios that matter most: successful flows, error states, field validation, redirects.
+
+**3. Autonomous self-healing**
+When a test fails due to a broken selector, QAgen opens a headless browser, reproduces the exact actions that caused the failure, finds the correct element in the live DOM, and patches the test file automatically.
+
+**4. Contextual memory**
+Healed selectors are stored per domain in `~/.qagen/memory.json`. On subsequent runs against the same application, the AI already knows which selectors to use — eliminating recurring failures.
+
+---
+
+## Requirements
+
+- Node.js 18+
+- OpenAI API key ([get one here](https://platform.openai.com/api-keys))
+- Playwright installed in your project (`npm install @playwright/test && npx playwright install chromium`)
+
+---
+
+## Installation
+
+```bash
+npm install -g @estebanlopp/qagen
+```
+
+On first use, configure your OpenAI API key:
+
+```bash
+qagen config
+```
+
+The key is stored globally in `~/.qagen/config.json` and works from any directory.
+
+---
+
+## Usage
+
+Analyze a single page:
+
+```bash
+qagen https://your-app.com/login
+```
+
+Crawl and analyze the entire application:
+
+```bash
+qagen https://your-app.com crawl
+```
+
+QAgen creates a `.qagen/` folder in your current directory containing all generated files. If a `.gitignore` file exists, `.qagen/` is added automatically.
+
+---
+
+## Output
+
+After each run, two reports are generated:
+
+- `.qagen/qagen-report.html` — Session summary: detected flow, test results, self-healing activity
+- `.qagen/playwright-report/` — Full Playwright HTML report with screenshots on failure
+
+```bash
+npx playwright show-report .qagen/playwright-report
+```
+
+---
+
+## What gets generated
+
+```
+your-project/
+└── .qagen/
+    ├── tests/generated/       AI-generated test files
+    ├── playwright-report/     Detailed Playwright report
+    ├── test-results/          Screenshots of failed tests
+    ├── playwright.config.js   Auto-generated Playwright config
+    └── qagen-report.html      QAgen session report
+```
+
+---
+
+## Current status
+
+QAgen is in active development. Current version: `0.1.x` — MVP CLI, tested against real web applications.
+
+Working today:
+- Automatic route crawling
+- Critical flow detection (login, register, checkout, search, forms, dashboard)
+- AI test generation with business context
+- Autonomous self-healing with live DOM inspection
+- Contextual memory per domain
+- Root cause analysis for unresolved failures
+- Session HTML report
+
+In progress:
+- CI/CD integration
+- Web dashboard
+
+---
+
+## License
+
+ISC
+</file>
+
+<file path="src/config.js">
+/**
+ * config.js
+ *
+ * Maneja la configuración global de QAgen.
+ * La configuración se guarda en ~/.qagen/config.json para que
+ * esté disponible desde cualquier directorio donde se ejecute el CLI,
+ * sin depender de un archivo .env local.
+ *
+ * Flujo de resolución de la API key (en orden de prioridad):
+ * 1. Variable de entorno OPENAI_API_KEY (ya establecida en el sistema)
+ * 2. ~/.qagen/config.json (configurada con `qagen config`)
+ * 3. .env en el directorio actual (fallback para desarrollo local)
+ */
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const readline = require('readline');
+
+// Directorio y archivo de configuración global
+const CONFIG_DIR = path.join(os.homedir(), '.qagen');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+
+/**
+ * Lee la configuración guardada.
+ * Devuelve un objeto vacío si no existe todavía.
+ *
+ * @returns {object}
+ */
+function readConfig() {
+  try {
+    if (!fs.existsSync(CONFIG_FILE)) return {};
+    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Guarda la configuración en ~/.qagen/config.json.
+ * Crea el directorio si no existe.
+ *
+ * @param {object} config
+ */
+function writeConfig(config) {
+  if (!fs.existsSync(CONFIG_DIR)) {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  }
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+}
+
+/**
+ * Resuelve la API key de OpenAI desde las fuentes disponibles.
+ * Prioridad: variable de entorno → config global → .env local
+ *
+ * @returns {string|null}
+ */
+function resolveApiKey() {
+  // 1. Variable de entorno del sistema (la más prioritaria)
+  if (process.env.OPENAI_API_KEY) {
+    return process.env.OPENAI_API_KEY;
+  }
+
+  // 2. Configuración global guardada con `qagen config`
+  const config = readConfig();
+  if (config.openaiApiKey) {
+    return config.openaiApiKey;
+  }
+
+  // 3. Archivo .env local (útil en desarrollo)
+  try {
+    const dotenvPath = path.join(process.cwd(), '.env');
+    if (fs.existsSync(dotenvPath)) {
+      const content = fs.readFileSync(dotenvPath, 'utf8');
+      const match = content.match(/^OPENAI_API_KEY=(.+)$/m);
+      if (match) return match[1].trim();
+    }
+  } catch {
+    // Si falla la lectura del .env, continuamos sin ella
+  }
+
+  return null;
+}
+
+/**
+ * Flujo interactivo para configurar QAgen.
+ * Le pide al usuario su API key de OpenAI y la guarda globalmente.
+ * Se ejecuta cuando el usuario corre `qagen config`.
+ */
+async function runConfigWizard() {
+  console.log('\n⚙️  Configuración de QAgen\n');
+
+  const currentConfig = readConfig();
+  const hasKey = !!currentConfig.openaiApiKey;
+
+  if (hasKey) {
+    const maskedKey = currentConfig.openaiApiKey.substring(0, 7) + '...' +
+                      currentConfig.openaiApiKey.slice(-4);
+    console.log(`   API key actual: ${maskedKey}`);
+    console.log('   Ingresa una nueva para reemplazarla, o presiona Enter para mantenerla.\n');
+  } else {
+    console.log('   Necesitas una API key de OpenAI para usar QAgen.');
+    console.log('   Puedes obtenerla en: https://platform.openai.com/api-keys\n');
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  const apiKey = await new Promise(resolve => {
+    rl.question('   OpenAI API Key: ', answer => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+
+  // Si el usuario no ingresó nada y ya había una key, mantener la actual
+  if (!apiKey && hasKey) {
+    console.log('\n   ✅ Configuración sin cambios.\n');
+    return;
+  }
+
+  // Validación básica del formato de la key
+  if (!apiKey) {
+    console.log('\n   ❌ No ingresaste una API key. Configuración cancelada.\n');
+    process.exit(1);
+  }
+
+  if (!apiKey.startsWith('sk-')) {
+    console.log('\n   ⚠️  La key no parece válida (debe empezar con "sk-").');
+    console.log('   Guardada de todas formas — verifica que sea correcta.\n');
+  }
+
+  writeConfig({ ...currentConfig, openaiApiKey: apiKey });
+
+  console.log('\n   ✅ API key guardada en ~/.qagen/config.json');
+  console.log('   Ya puedes usar: qagen https://tu-app.com\n');
+}
+
+/**
+ * Lee la memoria de selectores para un dominio específico.
+ * Devuelve un array de { wrong, correct, context } o vacío si no hay memoria.
+ *
+ * @param {string} domain  ej: "the-internet.herokuapp.com"
+ * @returns {Array<{wrong, correct, context}>}
+ */
+function readMemory(domain) {
+  try {
+    const memoryFile = path.join(CONFIG_DIR, 'memory.json');
+    if (!fs.existsSync(memoryFile)) return [];
+    const memory = JSON.parse(fs.readFileSync(memoryFile, 'utf8'));
+    return memory[domain]?.selectors || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Guarda un selector curado en la memoria del dominio.
+ * Si ya existe una corrección para ese selector incorrecto, la actualiza.
+ *
+ * @param {string} domain
+ * @param {string} wrong    selector que falló
+ * @param {string} correct  selector correcto encontrado en DOM
+ * @param {string} context  descripción de cuándo aplica esta corrección
+ */
+
+function saveToMemory(domain, wrong, correct, context) {
+  try {
+    const memoryFile = path.join(CONFIG_DIR, 'memory.json');
+    let memory = {};
+
+    if (fs.existsSync(memoryFile)) {
+      memory = JSON.parse(fs.readFileSync(memoryFile, 'utf8'));
+    }
+
+    if (!memory[domain]) {
+      memory[domain] = { selectors: [] };
+    }
+
+    // Actualizar si ya existe, agregar si es nuevo
+    const existing = memory[domain].selectors.findIndex(s => s.wrong === wrong);
+    if (existing >= 0) {
+      memory[domain].selectors[existing] = { wrong, correct, context, assertion: 'toContainText' };
+    } else {
+      memory[domain].selectors.push({ wrong, correct, context, assertion: 'toContainText' });
+    }
+
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+
+    fs.writeFileSync(memoryFile, JSON.stringify(memory, null, 2), 'utf8');
+  } catch (err) {
+    console.log(`⚠️  No se pudo guardar en memoria: ${err.message}`);
+  }
+}
+
+module.exports = { resolveApiKey, runConfigWizard, readMemory, saveToMemory };
+</file>
+
+<file path="src/healer.js">
+/**
+ * healer.js
+ *
+ * Auto-healing de tests fallidos. Cuando Playwright reporta un fallo
+ * por selector incorrecto, este módulo:
+ *
+ * 1. Parsea el output de Playwright para identificar qué falló y por qué
+ * 2. Abre el browser y reproduce la acción que causó el fallo
+ * 3. Busca el texto esperado en el DOM real post-acción
+ * 4. Si lo encuentra, reescribe el selector en el archivo .spec.js
+ *
+ * Solo actúa sobre fallos de tipo "selector encontró el elemento pero
+ * el texto/valor no coincide". No intenta curar fallos de lógica,
+ * timeouts de red, o errores de sintaxis.
+ */
+
+const { chromium } = require('playwright');
+const fs = require('fs');
+const path = require('path');
+const { saveToMemory } = require('./config');
+
+/**
+ * Elimina los códigos de escape ANSI del output de Playwright.
+ * Playwright colorea su output con secuencias como \u001b[32m (verde),
+ * \u001b[39m (reset), etc. Estas secuencias rompen los regex del parser
+ * porque quedan intercaladas en el texto que queremos extraer.
+ */
+function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+/**
+ * Parsea el output de texto de Playwright y extrae los fallos accionables.
+ */
+function parseFailures(playwrightOutput, cwd) {
+  const clean = stripAnsi(playwrightOutput);
+  const failures = [];
+  const errorBlocks = clean.split(/\n\s*\d+\) /);
+
+  for (const block of errorBlocks) {
+    if (!block.includes('toHaveText') && !block.includes('toContainText')) continue;
+
+    const expectedMatch = block.match(/Expected:\s+"([^"]+)"/);
+    if (!expectedMatch) continue;
+    const expectedText = expectedMatch[1];
+
+    const locatorMatch = block.match(/Locator:\s+locator\('([^']+)'\)/);
+    if (!locatorMatch) continue;
+    const locator = locatorMatch[1];
+
+    const fileMatch = block.match(/at\s+([^\n]+\.spec\.js):(\d+):/);
+    if (!fileMatch) continue;
+
+    let filePath = fileMatch[1].trim();
+    const line = parseInt(fileMatch[2], 10);
+
+    if (!path.isAbsolute(filePath)) {
+      filePath = path.join(cwd, filePath);
+    }
+    filePath = path.normalize(filePath);
+
+    failures.push({ filePath, line, expectedText, locator });
+  }
+
+  const seen = new Set();
+  return failures.filter(f => {
+    const key = `${f.filePath}:${f.line}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Extrae las acciones de interacción previas a la línea del fallo.
+ */
+function extractActionsBeforeLine(filePath, failLine) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split('\n');
+  const actions = [];
+
+  for (let i = failLine - 2; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line.startsWith('test(') || line.startsWith('test.beforeEach')) break;
+
+    if (
+      line.includes('page.fill(') ||
+      line.includes('page.click(') ||
+      line.includes('page.goto(') ||
+      line.includes('page.press(') ||
+      line.includes('page.selectOption(')
+    ) {
+      actions.unshift(line);
+    }
+  }
+
+  return actions;
+}
+
+/**
+ * Extrae la URL del goto del beforeEach.
+ */
+function extractGotoUrl(filePath) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const match = content.match(/page\.goto\('([^']+)'\)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Abre el browser, reproduce las acciones, y busca el texto esperado
+ * en el DOM resultante. Devuelve el selector del elemento que lo contiene.
+ */
+async function findSelectorInLiveDom(url, actions, expectedText) {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(url);
+
+    for (const action of actions) {
+      if (action.includes('page.goto(')) continue;
+      try {
+        const fn = new Function('page', `return (async () => { ${action} })()`);
+        await fn(page);
+        await page.waitForTimeout(500);
+      } catch {
+        console.log(`   ⚠️  Acción no ejecutable: ${action.substring(0, 60)}`);
+      }
+    }
+
+    await page.waitForTimeout(1000);
+
+    const candidateSelectors = [
+      '#flash',
+      '.flash',
+      '.alert',
+      '.error',
+      '.message',
+      '.notification',
+      '[role="alert"]',
+      'p',
+      'span',
+      'div',
+    ];
+
+    for (const selector of candidateSelectors) {
+      const elements = await page.locator(selector).all();
+      for (const el of elements) {
+        try {
+          const text = await el.textContent();
+          if (text && text.includes(expectedText)) {
+            const id = await el.getAttribute('id');
+            const className = await el.getAttribute('class');
+            await browser.close();
+            if (id) return `#${id}`;
+            if (className) {
+              const firstClass = className.trim().split(/\s+/)[0];
+              return `.${firstClass}`;
+            }
+            return selector;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    await browser.close();
+    return null;
+
+  } catch (err) {
+    await browser.close();
+    throw err;
+  }
+}
+
+/**
+ * Reemplaza el selector incorrecto en el archivo .spec.js y cambia
+ * toHaveText por toContainText cuando corresponde.
+ *
+ * Por qué toContainText: cuando el healer encuentra el texto esperado
+ * dentro de un elemento que tiene contenido adicional (como el botón ×
+ * de cierre en mensajes flash), toHaveText falla porque exige match
+ * exacto. toContainText verifica que el texto esté contenido dentro,
+ * sin importar el resto del contenido del elemento.
+ */
+function patchFile(filePath, failLine, oldLocator, newSelector) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split('\n');
+
+  const targetLine = lines[failLine - 1];
+
+  if (!targetLine) {
+    console.log(`   ⚠️  No se encontró la línea ${failLine}`);
+    return false;
+  }
+
+  const oldPattern = `locator('${oldLocator}')`;
+  const newPattern = `locator('${newSelector}')`;
+
+  if (!targetLine.includes(oldPattern)) {
+    console.log(`   ⚠️  Patrón no encontrado en línea ${failLine}: ${oldPattern}`);
+    return false;
+  }
+
+  // Primero reemplazamos el selector
+  let newLine = targetLine.replace(oldPattern, newPattern);
+
+  // Luego cambiamos toHaveText por toContainText.
+  // El healer encontró el texto dentro del elemento pero puede haber
+  // contenido adicional (espacios, botón de cierre, etc.), entonces
+  // toHaveText (match exacto) siempre fallará. toContainText es correcto.
+  newLine = newLine.replace('.toHaveText(', '.toContainText(');
+
+  lines[failLine - 1] = newLine;
+  fs.writeFileSync(filePath, lines.join('\n'));
+  return true;
+}
+
+/**
+ * Función principal. Detecta fallos, intenta curarlos, retorna resumen.
+ */
+async function healFailures(playwrightOutput, cwd) {
+  const failures = parseFailures(playwrightOutput, cwd);
+
+  if (failures.length === 0) {
+    return { healed: 0, failed: 0, details: [] };
+  }
+
+  console.log(`\n🔧 Auto-healing: ${failures.length} fallo(s) accionable(s) detectado(s)\n`);
+
+  let healed = 0;
+  let failed = 0;
+  const details = [];
+
+  for (const failure of failures) {
+    const { filePath, line, expectedText, locator } = failure;
+
+    console.log(`   → Curando: "${expectedText}" en ${path.basename(filePath)}:${line}`);
+
+    if (!fs.existsSync(filePath)) {
+      console.log(`   ⚠️  Archivo no encontrado: ${filePath}`);
+      failed++;
+      details.push(`❌ ${path.basename(filePath)}:${line} — archivo no encontrado`);
+      continue;
+    }
+
+    const url = extractGotoUrl(filePath);
+    if (!url) {
+      console.log(`   ⚠️  No se pudo extraer la URL`);
+      failed++;
+      details.push(`❌ ${path.basename(filePath)}:${line} — URL no encontrada`);
+      continue;
+    }
+
+    const actions = extractActionsBeforeLine(filePath, line);
+
+    try {
+      const newSelector = await findSelectorInLiveDom(url, actions, expectedText);
+
+      if (!newSelector) {
+        console.log(`   ⚠️  Texto "${expectedText}" no encontrado en DOM post-acción`);
+        failed++;
+        details.push(`❌ ${path.basename(filePath)}:${line} — texto no encontrado en DOM`);
+        continue;
+      }
+
+      if (newSelector === locator) {
+        console.log(`   ⚠️  Selector encontrado es el mismo que el original`);
+        failed++;
+        details.push(`❌ ${path.basename(filePath)}:${line} — mismo selector`);
+        continue;
+      }
+
+      const patched = patchFile(filePath, line, locator, newSelector);
+
+      if (patched) {
+        console.log(`   ✅ Curado: locator('${locator}').toHaveText → locator('${newSelector}').toContainText`);
+        healed++;
+
+        // Guardar en memoria para que la próxima vez el generador
+        // ya sepa qué selector usar en este dominio
+        const domain = new URL(url).hostname;
+        saveToMemory(domain, locator, newSelector, `mensaje después de acción en ${url}`);
+        
+        details.push(`✅ ${path.basename(filePath)}:${line} — ${locator} → ${newSelector}`);
+      } else {
+        failed++;
+        details.push(`❌ ${path.basename(filePath)}:${line} — patch falló`);
+      }
+
+    } catch (err) {
+      console.log(`   ⚠️  Error durante healing: ${err.message}`);
+      failed++;
+      details.push(`❌ ${path.basename(filePath)}:${line} — ${err.message}`);
+    }
+  }
+
+  return { healed, failed, details };
+}
+
+module.exports = { healFailures };
+</file>
+
+<file path="src/reporter.js">
+/**
+ * reporter.js
+ *
+ * Genera un reporte HTML de la sesión de QAgen.
+ * Incluye: flujo detectado, resultados, healing, y análisis de fallos no resueltos.
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+function parseTestResults(output) {
+  const results = [];
+  const lines = output.split('\n');
+
+  for (const line of lines) {
+    const passMatch = line.match(/✓\s+\d+\s+[^\s]+\s+›\s+[^›]+›\s+(.+?)\s+\(\d/);
+    const failMatch = line.match(/✘\s+\d+\s+[^\s]+\s+›\s+[^›]+›\s+(.+?)\s+\(\d/);
+
+    if (passMatch) {
+      results.push({ name: passMatch[1].trim(), status: 'passed' });
+    } else if (failMatch) {
+      if (!line.includes('retry #')) {
+        results.push({ name: failMatch[1].trim(), status: 'failed' });
+      }
+    }
+  }
+
+  return results;
+}
+
+function formatDuration(startTime) {
+  const seconds = Math.round((Date.now() - startTime) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+}
+
+function flowBadge(flowType) {
+  const badges = {
+    login:       { emoji: '🔐', label: 'Login',       color: '#3b82f6' },
+    register:    { emoji: '📝', label: 'Registro',    color: '#8b5cf6' },
+    checkout:    { emoji: '🛒', label: 'Checkout',    color: '#f59e0b' },
+    search:      { emoji: '🔍', label: 'Búsqueda',    color: '#06b6d4' },
+    'crud-form': { emoji: '📋', label: 'Formulario',  color: '#10b981' },
+    dashboard:   { emoji: '📊', label: 'Dashboard',   color: '#6366f1' },
+    unknown:     { emoji: '❓', label: 'Desconocido', color: '#6b7280' },
+  };
+  return badges[flowType] || badges.unknown;
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Genera el HTML de la sección de fallos no resueltos con análisis de IA.
+ */
+function buildFailureAnalysisSection(analyses) {
+  if (!analyses || analyses.length === 0) return '';
+
+  const typeLabels = {
+    selector_incorrecto: { label: 'Selector incorrecto', color: '#f59e0b', bg: '#fffbeb' },
+    texto_incorrecto:    { label: 'Texto incorrecto',    color: '#f59e0b', bg: '#fffbeb' },
+    elemento_ausente:    { label: 'Elemento ausente',    color: '#ef4444', bg: '#fef2f2' },
+    timing:              { label: 'Problema de timing',  color: '#8b5cf6', bg: '#f5f3ff' },
+    logica_de_test:      { label: 'Lógica del test',     color: '#6366f1', bg: '#eef2ff' },
+    bug_real:            { label: 'Posible bug real',    color: '#dc2626', bg: '#fef2f2' },
+    desconocido:         { label: 'Desconocido',         color: '#6b7280', bg: '#f9fafb' },
+  };
+
+  const rows = analyses.map(a => {
+    const typeInfo = typeLabels[a.type] || typeLabels.desconocido;
+    return `
+      <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <span style="background:${typeInfo.bg};color:${typeInfo.color};
+                       font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;">
+            ${escapeHtml(typeInfo.label)}
+          </span>
+          <span style="font-size:14px;font-weight:500;color:#1f2937;">
+            ${escapeHtml(a.testName)}
+          </span>
+        </div>
+        <p style="font-size:13px;color:#4b5563;margin-bottom:8px;line-height:1.5;">
+          ${escapeHtml(a.explanation)}
+        </p>
+        <div style="background:#f8fafc;border-left:3px solid ${typeInfo.color};
+                    padding:8px 12px;border-radius:0 4px 4px 0;">
+          <span style="font-size:12px;color:#6b7280;font-weight:600;">ACCIÓN RECOMENDADA: </span>
+          <span style="font-size:13px;color:#374151;">${escapeHtml(a.recommendation)}</span>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="card">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+                  letter-spacing:0.05em;margin-bottom:16px;">
+        🔬 Análisis de fallos no resueltos
+      </div>
+      <p style="font-size:13px;color:#6b7280;margin-bottom:16px;">
+        Estos fallos no pudieron ser curados automáticamente. El agente analizó cada uno
+        para ayudarte a entender qué salió mal.
+      </p>
+      ${rows}
+    </div>`;
+}
+
+function generateHTML(session) {
+  const {
+    url, startTime, flow, testsFile,
+    firstOutput, healing, finalOutput,
+    failureAnalyses = []
+  } = session;
+
+  const duration = formatDuration(startTime);
+  const date = new Date().toLocaleString('es-CO', {
+    dateStyle: 'full',
+    timeStyle: 'short'
+  });
+
+  const badge = flowBadge(flow.type);
+  const firstResults = parseTestResults(firstOutput);
+  const finalResults = finalOutput ? parseTestResults(finalOutput) : null;
+  const displayResults = finalResults || firstResults;
+
+  const totalTests = displayResults.length;
+  const passedTests = displayResults.filter(t => t.status === 'passed').length;
+  const successRate = totalTests > 0 ? Math.round((passedTests / totalTests) * 100) : 0;
+  const rateColor = successRate === 100 ? '#10b981' : successRate >= 60 ? '#f59e0b' : '#ef4444';
+
+  const testRows = displayResults.map(t => {
+    const icon = t.status === 'passed' ? '✓' : '✘';
+    const color = t.status === 'passed' ? '#10b981' : '#ef4444';
+    const bg = t.status === 'passed' ? '#f0fdf4' : '#fef2f2';
+    return `
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;
+                  background:${bg};border-radius:6px;margin-bottom:6px;">
+        <span style="color:${color};font-weight:700;font-size:16px;min-width:20px;">${icon}</span>
+        <span style="color:#1f2937;font-size:14px;">${escapeHtml(t.name)}</span>
+      </div>`;
+  }).join('');
+
+  const healingRows = healing.details.map(d => {
+    const isSuccess = d.startsWith('✅');
+    const bg = isSuccess ? '#f0fdf4' : '#fef2f2';
+    const color = isSuccess ? '#065f46' : '#7f1d1d';
+    return `
+      <div style="padding:8px 14px;background:${bg};border-radius:6px;
+                  margin-bottom:6px;font-size:13px;color:${color};font-family:monospace;">
+        ${escapeHtml(d)}
+      </div>`;
+  }).join('');
+
+  const healingSection = healing.healed > 0 || healing.failed > 0 ? `
+    <div style="margin-top:32px;">
+      <h2 style="font-size:18px;font-weight:600;color:#1f2937;margin-bottom:16px;">
+        🔧 Auto-healing
+      </h2>
+      <div style="display:flex;gap:16px;margin-bottom:16px;">
+        <div style="flex:1;background:#f0fdf4;border-radius:8px;padding:16px;text-align:center;">
+          <div style="font-size:28px;font-weight:700;color:#10b981;">${healing.healed}</div>
+          <div style="font-size:13px;color:#065f46;margin-top:4px;">Tests curados</div>
+        </div>
+        <div style="flex:1;background:#fef2f2;border-radius:8px;padding:16px;text-align:center;">
+          <div style="font-size:28px;font-weight:700;color:#ef4444;">${healing.failed}</div>
+          <div style="font-size:13px;color:#7f1d1d;margin-top:4px;">No pudieron curarse</div>
+        </div>
+      </div>
+      ${healingRows ? `<div style="margin-top:8px;">${healingRows}</div>` : ''}
+    </div>` : '';
+
+  // Sección de análisis de fallos — solo aparece si hay fallos sin resolver
+  const failureSection = buildFailureAnalysisSection(failureAnalyses);
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QAgen — Reporte de sesión</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f3f4f6;
+      color: #1f2937;
+      min-height: 100vh;
+      padding: 32px 16px;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 28px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+  </style>
+</head>
+<body>
+  <div style="max-width:720px;margin:0 auto;">
+
+    <div style="margin-bottom:24px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <span style="font-size:24px;">🤖</span>
+        <span style="font-size:22px;font-weight:700;color:#1f2937;">QAgen</span>
+        <span style="font-size:13px;color:#6b7280;margin-left:4px;">Reporte de sesión</span>
+      </div>
+      <div style="font-size:13px;color:#9ca3af;">${date} · Duración: ${duration}</div>
+    </div>
+
+    <div class="card">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+                  letter-spacing:0.05em;margin-bottom:8px;">URL analizada</div>
+      <div style="font-size:15px;color:#2563eb;word-break:break-all;">${escapeHtml(url)}</div>
+      <div style="font-size:12px;color:#9ca3af;margin-top:6px;">
+        Archivo generado: <code style="color:#374151;">${escapeHtml(testsFile)}</code>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+                  letter-spacing:0.05em;margin-bottom:12px;">Flujo crítico detectado</div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span style="font-size:32px;">${badge.emoji}</span>
+        <div>
+          <div style="font-size:20px;font-weight:700;color:${badge.color};">${badge.label}</div>
+          <div style="font-size:13px;color:#6b7280;margin-top:2px;">
+            Confianza: <span style="font-weight:600;color:#374151;">${flow.confidence}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+                  letter-spacing:0.05em;margin-bottom:16px;">
+        Resultados${finalResults ? ' (después del healing)' : ''}
+      </div>
+
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:20px;">
+        <span style="font-size:48px;font-weight:700;color:${rateColor};">${successRate}%</span>
+        <span style="font-size:15px;color:#6b7280;">${passedTests} de ${totalTests} tests pasaron</span>
+      </div>
+
+      <div style="height:8px;background:#f3f4f6;border-radius:4px;margin-bottom:24px;overflow:hidden;">
+        <div style="height:100%;width:${successRate}%;background:${rateColor};border-radius:4px;"></div>
+      </div>
+
+      ${testRows}
+      ${healingSection}
+    </div>
+
+    ${failureSection}
+
+    <div style="text-align:center;font-size:12px;color:#9ca3af;padding:16px 0;">
+      Generado por QAgen · El agente de QA autónomo
+    </div>
+
+  </div>
+</body>
+</html>`;
+}
+
+function generateReport(session) {
+  const qagenDir = session.qagenDir || process.cwd();
+  const html = generateHTML(session);
+  const outputPath = path.join(qagenDir, 'qagen-report.html');
+  fs.writeFileSync(outputPath, html, 'utf8');
+  console.log(`\n📋 Reporte QAgen generado: .qagen/qagen-report.html`);
+  return outputPath;
+}
+
+module.exports = { generateReport };
+</file>
+
+<file path=".gitignore">
+node_modules
+.env
+test-results
+playwright-report
+qagen-report.html
+# QAgen — archivos generados automáticamente
+.qagen/
+</file>
+
+<file path="package.json">
+{
+  "name": "@estebanlopp/qagen",
+  "version": "0.1.6",
+  "description": "Autonomous QA agent that analyzes your web app, generates Playwright tests with AI, and self-heals when selectors break.",
+  "main": "index.js",
+  "bin": {
+    "qagen": "./cli.js"
+  },
+  "scripts": {
+    "test": "npx playwright test --config .qagen/playwright.config.js",
+    "generate": "node index.js"
+  },
+  "keywords": [
+    "qa",
+    "testing",
+    "playwright",
+    "ai",
+    "automation",
+    "self-healing",
+    "test-generation"
+  ],
+  "author": "Esteban Lopez",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EstebanLopp/qagen.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "@playwright/test": "^1.60.0",
+    "dotenv": "^17.4.2",
+    "openai": "^6.37.0",
+    "playwright": "^1.60.0"
+  }
+}
+</file>
+
+<file path="src/analyzer.js">
+const { chromium } = require('playwright');
+const OpenAI = require('openai');
+const dotenv = require('dotenv');
+const fs = require('fs');
+const path = require('path');
+const { detectFlow } = require('./flow-detector');
+const { resolveApiKey, readMemory } = require('./config');
+
+dotenv.config();
+
+const apiKey = resolveApiKey();
+
+if (!apiKey) {
+  console.error('\n❌ No se encontró una API key de OpenAI.');
+  console.error('   Ejecuta: qagen config\n');
+  process.exit(1);
+}
+
+const openai = new OpenAI({ apiKey });
+
+function detectPageCategory(url) {
+  const u = url.toLowerCase();
+  if (u.includes('basic_auth') || u.includes('digest_auth')) return 'auth';
+  if (u.includes('download_secure')) return 'auth_required';
+  if (u.includes('dynamic_content')) return 'dynamic';
+  if (u.includes('typos')) return 'dynamic';
+  if (u.includes('entry_ad') || u.includes('exit_intent')) return 'modal';
+  if (u.includes('context_menu')) return 'context_menu';
+  if (u.includes('tinymce')) return 'iframe_editor';
+  if (u.includes('nested_frames')) return 'nested_frames';
+  if (u.includes('key_presses')) return 'key_presses';
+  return 'standard';
+}
+
+/**
+ * Analiza una URL y genera tests de Playwright.
+ *
+ * @param {string} url
+ * @param {string} qagenDir  ruta absoluta a .qagen/ del proyecto del usuario
+ * @returns {{ filepath, flow }}
+ */
+async function analyzeApp(url, qagenDir) {
+  console.log(`\n🔍 Analizando: ${url}\n`);
+
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
+  await page.goto(url);
+
+  const elements = await page.evaluate(() => {
+    const result = { buttons: [], inputs: [], forms: [], links: [] };
+
+    document.querySelectorAll('button').forEach(el => {
+      result.buttons.push({
+        text: el.innerText.trim(),
+        type: el.type,
+        disabled: el.disabled,
+        visible: el.offsetParent !== null
+      });
+    });
+
+    document.querySelectorAll('input').forEach(el => {
+      result.inputs.push({
+        type: el.type,
+        name: el.name,
+        placeholder: el.placeholder,
+        disabled: el.disabled,
+        checked: el.checked,
+        value: el.value,
+        visible: el.offsetParent !== null
+      });
+    });
+
+    document.querySelectorAll('form').forEach((el, i) => {
+      result.forms.push(`form-${i}`);
+    });
+
+    document.querySelectorAll('a').forEach(el => {
+      if (el.innerText.trim()) {
+        result.links.push({
+          text: el.innerText.trim(),
+          href: el.href,
+          target: el.target || '_self'
+        });
+      }
+    });
+
+    return result;
+  });
+
+  const pageInfo = await page.evaluate(() => {
+    return {
+      title: document.title,
+      h1: document.querySelector('h1')?.innerText?.trim() || '',
+      h2: document.querySelector('h2')?.innerText?.trim() || '',
+      hasIframe: document.querySelectorAll('iframe').length > 0,
+      hasFileInput: document.querySelectorAll('input[type="file"]').length > 0,
+      hasShadowDOM: Array.from(document.querySelectorAll('*')).some(el => el.shadowRoot)
+    };
+  });
+
+  const bodyHTML = await page.evaluate(() => {
+    const main = document.querySelector('.example') ||
+                 document.querySelector('main') ||
+                 document.querySelector('#content') ||
+                 document.body;
+    return main.innerHTML
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, 3000);
+  });
+
+  await browser.close();
+
+  const flow = detectFlow(url, elements, pageInfo);
+
+  console.log(`✅ Elementos encontrados`);
+  console.log(`🧠 Flujo detectado: ${flow.type} (confianza: ${flow.confidence})`);
+  console.log(`🤖 Generando tests con IA...\n`);
+
+  const pageCategory = detectPageCategory(url);
+  const result = await generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow);
+
+  if (!result) {
+    throw new Error(`No se pudo generar código válido para ${url}`);
+  }
+
+  const filepath = saveTests(result.code, url, qagenDir);
+  return { filepath, flow };
+}
+
+async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow) {
+  const categoryInstructions = {
+    auth: `INSTRUCCIÓN ESPECIAL - PÁGINA CON AUTENTICACIÓN:
+- El beforeEach debe usar: await page.goto('${url.replace('://', '://admin:admin@')}');
+- Para verificar contenido usa locators específicos: page.locator('h1'), page.locator('p')
+- NUNCA uses expect(page).toHaveText() — eso no existe. Usa expect(page.locator('...')).toBeVisible()
+- Testea solo visibilidad de elementos, no texto exacto`,
+
+    auth_required: `INSTRUCCIÓN ESPECIAL - PÁGINA PROTEGIDA:
+- Esta página requiere autenticación que no podemos proveer
+- Genera SOLO 1 test: verificar que la página responde (toHaveURL)
+- NO intentes acceder al contenido protegido`,
+
+    dynamic: `INSTRUCCIÓN ESPECIAL - CONTENIDO DINÁMICO:
+- El contenido CAMBIA en cada carga, NUNCA verifiques texto exacto
+- Cuando un selector resuelve múltiples elementos usa .first(): expect(locator.first()).toBeVisible()
+- NUNCA uses toBeVisible() en un locator que puede resolver múltiples elementos sin .first()
+- Usa selectores de estructura como: page.locator('.content').first()`,
+
+    modal: `INSTRUCCIÓN ESPECIAL - PÁGINA CON MODAL/OVERLAY:
+- El modal aparece automáticamente al cargar, puede tardar
+- Para verificar el modal: await page.waitForSelector('.modal', { state: 'visible' })
+- Para cerrar: busca el botón de cierre dentro del modal
+- NO asumas que el modal ya está visible al inicio del test`,
+
+    context_menu: `INSTRUCCIÓN ESPECIAL - MENÚ CONTEXTUAL:
+- Para disparar el context menu: await page.click('#hot-spot', { button: 'right' })
+- El alert aparece inmediatamente después del click derecho
+- Para aceptar el alert: page.on('dialog', dialog => dialog.accept())
+- Registra el handler ANTES del click`,
+
+    iframe_editor: `INSTRUCCIÓN ESPECIAL - EDITOR EN IFRAME (TinyMCE):
+- El editor carga dentro de un iframe que tarda en renderizar
+- USA: await page.waitForSelector('iframe[id*="mce"]', { state: 'attached' })
+- Para acceder al contenido: page.frameLocator('iframe[id*="mce"]').locator('body')
+- NUNCA uses toHaveValue() en un iframe editor — usa toContainText() en el body del iframe
+- Genera SOLO tests de visibilidad del iframe, no del contenido interno`,
+
+    nested_frames: `INSTRUCCIÓN ESPECIAL - FRAMES ANIDADOS:
+- Esta página usa frames HTML clásicos, no iframes modernos
+- Accede con: page.frame({ name: 'frame-top' }) o page.frame({ url: /.*/ })
+- SOLO testea que los frames existen: expect(page.frame('frame-top')).not.toBeNull()
+- NO intentes acceder al contenido dentro de los frames`,
+
+    key_presses: `INSTRUCCIÓN ESPECIAL - KEY PRESSES:
+- El input tiene id="target". Para enviar teclas DEBES hacer click primero:
+  await page.click('#target');
+  await page.press('#target', 'Enter');
+- El resultado aparece en #result
+- Usa toContainText('You entered:') sin especificar la tecla exacta
+- NUNCA presiones teclas sin hacer click en el input primero`,
+
+    iframe: `INSTRUCCIÓN ESPECIAL - PÁGINA CON IFRAME:
+- Usa page.frameLocator('selector') para acceder al contenido del iframe
+- Verifica que el iframe existe antes de interactuar: toBeVisible()`,
+
+    standard: ''
+  };
+
+  const specialInstruction = categoryInstructions[pageCategory] || '';
+
+  const restrictions = [];
+  if (pageInfo.hasIframe && pageCategory === 'standard') {
+    restrictions.push('- La página tiene iframes: usa page.frameLocator() para su contenido');
+  }
+  if (pageInfo.hasShadowDOM) {
+    restrictions.push('- La página tiene Shadow DOM: NO generes tests para su contenido interno');
+  }
+  if (pageInfo.hasFileInput) {
+    restrictions.push('- La página tiene input de archivo: usa page.setInputFiles() SOLO para file inputs');
+  }
+
+  const flowContext = flow.type !== 'unknown'
+    ? `
+CONTEXTO DE FLUJO (resultado del análisis semántico de la página):
+- Tipo de flujo detectado: ${flow.type}
+- Confianza de la detección: ${flow.confidence}
+- Escenarios críticos que DEBES cubrir en este orden de prioridad:
+${flow.testingHints.map((hint, i) => `  ${i + 1}. ${hint}`).join('\n')}
+
+Estos escenarios están ordenados por importancia de negocio. Priorizalos
+sobre cualquier otro test que puedas considerar generar.
+`
+    : '';
+
+  const domain = new URL(url).hostname;
+  const knownSelectors = readMemory(domain);
+
+  const memoryContext = knownSelectors.length > 0
+    ? `
+MEMORIA DE SELECTORES (correcciones aprendidas de sesiones anteriores en este dominio):
+${knownSelectors.map(s => `- NUNCA uses "${s.wrong}" para "${s.context}". Usa locator("${s.correct}").${s.assertion || 'toContainText'} en su lugar.`).join('\n')}
+
+Esta información viene de errores reales detectados y corregidos automáticamente.
+Respétala estrictamente.
+`
+    : '';
+
+  if (knownSelectors.length > 0) {
+    console.log(`🧠 Memoria activa: ${knownSelectors.length} selector(es) conocido(s) para ${domain}\n`);
+  }
+
+  const prompt = `
+Eres un experto en testing automatizado con Playwright v1.60.
+Genera tests válidos para la URL: ${url}
+
+ESTADO REAL DE LA PÁGINA (esto es lo que existe, no inventes nada más):
+- Título real: "${pageInfo.title}"
+- H1 real: "${pageInfo.h1}"
+- H2 real: "${pageInfo.h2}"
+
+HTML real (úsalo para entender el comportamiento):
+${bodyHTML}
+
+Elementos con su estado actual:
+- Botones: ${JSON.stringify(elements.buttons)}
+- Inputs: ${JSON.stringify(elements.inputs)}
+- Formularios: ${JSON.stringify(elements.forms)}
+- Links: ${JSON.stringify(elements.links)}
+
+${flowContext}
+${memoryContext}
+${specialInstruction ? `\n${specialInstruction}\n` : ''}
+${restrictions.length > 0 ? '\nRESTRICCIONES ESPECÍFICAS:\n' + restrictions.join('\n') : ''}
+
+REGLAS CRÍTICAS:
+1. Usa SOLO: const { test, expect } = require('@playwright/test');
+2. Para autenticación básica/digest: await page.goto('https://admin:admin@url');
+   NUNCA uses page.authenticate().
+3. Para sliders (input[type="range"]): usa page.fill() o keyboard.press(), NUNCA setInputFiles().
+4. Para descargas:
+   const [download] = await Promise.all([
+     page.waitForEvent('download'),
+     page.click('selector')
+   ]);
+5. Assertions válidas: toBeVisible(), toBeHidden(), toBeEnabled(), toBeDisabled(),
+   toBeChecked(), toHaveURL(), toHaveText(), toHaveAttribute(), toContainText().
+   NUNCA uses toBeClickable().
+6. SOLO testea lo que existe en el HTML. No inventes lógica.
+7. Para checkboxes: usa el campo "checked" del estado real para determinar el estado inicial.
+8. Genera máximo 5 tests. Prioriza flujos reales del usuario.
+9. NO generes tests para links a elementalselenium.com.
+10. Para toHaveTitle() usa el título real proporcionado arriba, como string exacto.
+11. Cierra TODOS los bloques con llaves.
+12. Para verificar que un campo password enmascara el texto, usa SIEMPRE:
+    await expect(page.locator('input[type="password"]')).toHaveAttribute('type', 'password');
+    NUNCA verifiques el valor del campo ni uses .not.toBe() para esto.
+
+Estructura exacta:
+const { test, expect } = require('@playwright/test');
+
+test.describe('Nombre descriptivo', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('${url}');
+  });
+
+  test('descripcion', async ({ page }) => {
+    // test
+  });
+});
+  `;
+
+  const maxRetries = 2;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    let response;
+
+    try {
+      response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'Eres un generador de código Playwright. Respondes ÚNICAMENTE con código JavaScript válido y completo. Sin explicaciones, sin markdown, sin backticks, sin texto adicional. El código debe poder ejecutarse con npx playwright test sin modificaciones.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 2000,
+        temperature: 0.1
+      });
+    } catch (apiError) {
+      console.log(`⚠️  Intento ${attempt}/${maxRetries}: error al llamar OpenAI — ${apiError.message}`);
+      if (attempt === maxRetries) return null;
+      continue;
+    }
+
+    let code = response.choices[0].message.content
+      .replace(/```javascript\n?/g, '')
+      .replace(/```\n?/g, '');
+
+    try {
+      new Function(code);
+      return { code, valid: true };
+    } catch (syntaxError) {
+      console.log(`⚠️  Intento ${attempt}/${maxRetries}: código inválido — ${syntaxError.message}`);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Guarda el código de tests en .qagen/tests/generated/.
+ *
+ * @param {string} code
+ * @param {string} url
+ * @param {string} qagenDir  ruta absoluta a .qagen/
+ * @returns {string}  ruta absoluta del archivo generado
+ */
+function saveTests(code, url, qagenDir) {
+  const domain = new URL(url).hostname.replace(/\./g, '_');
+  const filename = `${domain}_${Date.now()}.spec.js`;
+  const filepath = path.join(qagenDir, 'tests', 'generated', filename);
+
+  fs.mkdirSync(path.dirname(filepath), { recursive: true });
+
+  let clean = code
+    .replace(/```javascript\n?/g, '')
+    .replace(/```\n?/g, '');
+
+  clean = clean.replace(/\.toBeChecked\(false\)/g, '.not.toBeChecked()');
+  clean = clean.replace(/\.toBeChecked\(true\)/g, '.toBeChecked()');
+  clean = clean.replace(
+    /toHaveTitle\(\/(.+?)\/\)/g,
+    (match, inner) => inner.includes('/') ? `toHaveTitle('${inner}')` : match
+  );
+  clean = clean.replace(
+    /await expect\(page\)\.toHaveText\(/g,
+    'await expect(page.locator("body")).toContainText('
+  );
+
+  fs.writeFileSync(filepath, clean);
+  console.log(`✅ Tests guardados en: .qagen/tests/generated/${filename}\n`);
+
+  return filepath;
+}
+
+module.exports = { analyzeApp };
+</file>
+
+<file path="index.js">
+#!/usr/bin/env node
+
+const { analyzeApp } = require('./src/analyzer');
+const { crawlRoutes } = require('./src/crawler');
+const { healFailures } = require('./src/healer');
+const { generateReport } = require('./src/reporter');
+const { runConfigWizard } = require('./src/config');
+const { analyzeUnresolvedFailures } = require('./src/failure-analyzer');
+const { spawnSync } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+
+const command = process.argv[2];
+const mode = process.argv[3] || 'single';
+
+if (command === 'config') {
+  runConfigWizard().catch(console.error);
+  return;
+}
+
+const url = command;
+
+if (!url || url.startsWith('--')) {
+  console.log('\n🤖 QAgen — El agente de QA autónomo\n');
+  console.log('Uso:');
+  console.log('  qagen https://ejemplo.com          Analiza y testea una página');
+  console.log('  qagen https://ejemplo.com crawl    Detecta y testea todas las rutas');
+  console.log('  qagen config                       Configura tu API key de OpenAI\n');
+  process.exit(1);
+}
+
+const QAGEN_DIR = path.join(process.cwd(), '.qagen');
+
+/**
+ * Inicializa la carpeta .qagen/ con su estructura interna y
+ * agrega .qagen/ al .gitignore del usuario si existe.
+ */
+function initQagenDir() {
+  const dirs = [
+    QAGEN_DIR,
+    path.join(QAGEN_DIR, 'tests', 'generated'),
+    path.join(QAGEN_DIR, 'playwright-report'),
+    path.join(QAGEN_DIR, 'test-results'),
+  ];
+
+  dirs.forEach(d => fs.mkdirSync(d, { recursive: true }));
+
+  const gitignorePath = path.join(process.cwd(), '.gitignore');
+  if (fs.existsSync(gitignorePath)) {
+    const content = fs.readFileSync(gitignorePath, 'utf8');
+    if (!content.includes('.qagen/')) {
+      fs.appendFileSync(gitignorePath, '\n# QAgen — archivos generados automáticamente\n.qagen/\n');
+      console.log('📝 .qagen/ agregado a .gitignore\n');
+    }
+  }
+}
+
+/**
+ * Genera el playwright.config.js dentro de .qagen/ si no existe.
+ */
+function ensurePlaywrightConfig() {
+  const configPath = path.join(QAGEN_DIR, 'playwright.config.js');
+  if (fs.existsSync(configPath)) return;
+
+  const config = `const { defineConfig } = require('@playwright/test');
+
+module.exports = defineConfig({
+  testDir: './tests/generated',
+  timeout: 30000,
+  retries: 1,
+  fullyParallel: false,
+  workers: 1,
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report', open: 'never' }]
+  ],
+  use: {
+    headless: true,
+    screenshot: 'only-on-failure',
+    video: 'off'
+  }
+});
+`;
+
+  fs.writeFileSync(configPath, config, 'utf8');
+}
+
+/**
+ * Elimina todos los archivos .spec.js de sesiones anteriores.
+ */
+function clearPreviousTests() {
+  const dir = path.join(QAGEN_DIR, 'tests', 'generated');
+  if (!fs.existsSync(dir)) return;
+
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.spec.js'));
+  if (files.length > 0) {
+    files.forEach(f => fs.unlinkSync(path.join(dir, f)));
+    console.log(`🧹 ${files.length} test(s) de sesiones anteriores eliminado(s)\n`);
+  }
+}
+
+/**
+ * Ejecuta los tests y devuelve el output completo.
+ */
+function runTests() {
+  console.log('\n🧪 Ejecutando tests generados...\n');
+
+  const result = spawnSync(
+    'npx',
+    [
+      'playwright', 'test',
+      '--config', path.join(QAGEN_DIR, 'playwright.config.js')
+    ],
+    {
+      cwd: QAGEN_DIR,
+      shell: true,
+      encoding: 'utf8',
+      stdio: ['inherit', 'pipe', 'pipe']
+    }
+  );
+
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+
+  const output = (result.stdout || '') + (result.stderr || '');
+  const hasFailed = result.status === 1;
+
+  if (result.status !== 0 && result.status !== 1) {
+    console.log(`\n⚠️  Playwright terminó con código inesperado: ${result.status}`);
+    if (result.error) console.log(`   Error: ${result.error.message}`);
+  }
+
+  return { output, hasFailed };
+}
+
+/**
+ * Re-ejecuta los tests después del healing.
+ */
+function rerunTests() {
+  console.log('\n🔁 Re-ejecutando tests después del healing...\n');
+
+  const result = spawnSync(
+    'npx',
+    [
+      'playwright', 'test',
+      '--config', path.join(QAGEN_DIR, 'playwright.config.js')
+    ],
+    {
+      cwd: QAGEN_DIR,
+      shell: true,
+      encoding: 'utf8',
+      stdio: ['inherit', 'pipe', 'pipe']
+    }
+  );
+
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+
+  return (result.stdout || '') + (result.stderr || '');
+}
+
+async function run() {
+  initQagenDir();
+  ensurePlaywrightConfig();
+  clearPreviousTests();
+
+  const session = {
+    url,
+    startTime: Date.now(),
+    flow: { type: 'unknown', confidence: 'low' },
+    testsFile: '',
+    firstOutput: '',
+    healing: { healed: 0, failed: 0, details: [] },
+    finalOutput: null,
+    failureAnalyses: [],  // análisis de fallos no resueltos
+    qagenDir: QAGEN_DIR
+  };
+
+  if (mode === 'crawl') {
+    const routes = await crawlRoutes(url);
+    console.log('\n🤖 Analizando cada ruta...\n');
+
+    const failed = [];
+
+    for (let i = 0; i < routes.length; i++) {
+      const route = routes[i];
+      console.log(`\n[${i + 1}/${routes.length}] ${route}`);
+
+      try {
+        const result = await analyzeApp(route, QAGEN_DIR);
+        session.testsFile = path.basename(result.filepath);
+        session.flow = result.flow;
+      } catch (err) {
+        console.log(`⚠️  Falló el análisis de ${route}: ${err.message}`);
+        failed.push(route);
+      }
+    }
+
+    if (failed.length > 0) {
+      console.log('\n⚠️  Rutas que fallaron:');
+      failed.forEach(r => console.log(`   → ${r}`));
+    }
+
+  } else {
+    const result = await analyzeApp(url, QAGEN_DIR);
+    session.testsFile = path.basename(result.filepath);
+    session.flow = result.flow;
+  }
+
+  // Primera ejecución
+  const { output, hasFailed } = runTests();
+  session.firstOutput = output;
+
+  if (hasFailed) {
+    const healResult = await healFailures(output, QAGEN_DIR);
+    session.healing = healResult;
+
+    if (healResult.healed > 0) {
+      console.log(`\n✅ Healing completado: ${healResult.healed} test(s) curado(s)`);
+      if (healResult.failed > 0) {
+        console.log(`⚠️  ${healResult.failed} fallo(s) no pudieron ser curados`);
+      }
+      session.finalOutput = rerunTests();
+    } else {
+      console.log('\n⚠️  No se pudieron curar los fallos automáticamente');
+    }
+
+    // Analizar los fallos que quedaron sin resolver.
+    // Usamos el output final si hubo healing, si no el primero.
+    const outputToAnalyze = session.finalOutput || output;
+    session.failureAnalyses = await analyzeUnresolvedFailures(
+      outputToAnalyze,
+      url,
+      healResult.healed
+    );
+  }
+
+  generateReport(session);
+
+  console.log('\n📊 Reporte Playwright disponible en: .qagen/playwright-report/index.html');
+  console.log('   Ejecuta "npx playwright show-report .qagen/playwright-report" para abrirlo\n');
+}
+
+run().catch(console.error);
+</file>
+
+</files>

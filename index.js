@@ -231,7 +231,6 @@ async function run() {
     session.failureAnalyses = await analyzeUnresolvedFailures(
       outputToAnalyze,
       url,
-      healResult.healed
     );
   }
 

@@ -1,32 +1,12 @@
-/**
- * config.js
- *
- * Maneja la configuración global de QAgen.
- * La configuración se guarda en ~/.qagen/config.json para que
- * esté disponible desde cualquier directorio donde se ejecute el CLI,
- * sin depender de un archivo .env local.
- *
- * Flujo de resolución de la API key (en orden de prioridad):
- * 1. Variable de entorno OPENAI_API_KEY (ya establecida en el sistema)
- * 2. ~/.qagen/config.json (configurada con `qagen config`)
- * 3. .env en el directorio actual (fallback para desarrollo local)
- */
-
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
 
-// Directorio y archivo de configuración global
 const CONFIG_DIR = path.join(os.homedir(), '.qagen');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const MEMORY_FILE = path.join(CONFIG_DIR, 'memory.json');
 
-/**
- * Lee la configuración guardada.
- * Devuelve un objeto vacío si no existe todavía.
- *
- * @returns {object}
- */
 function readConfig() {
   try {
     if (!fs.existsSync(CONFIG_FILE)) return {};
@@ -36,12 +16,6 @@ function readConfig() {
   }
 }
 
-/**
- * Guarda la configuración en ~/.qagen/config.json.
- * Crea el directorio si no existe.
- *
- * @param {object} config
- */
 function writeConfig(config) {
   if (!fs.existsSync(CONFIG_DIR)) {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -49,25 +23,12 @@ function writeConfig(config) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
 }
 
-/**
- * Resuelve la API key de OpenAI desde las fuentes disponibles.
- * Prioridad: variable de entorno → config global → .env local
- *
- * @returns {string|null}
- */
 function resolveApiKey() {
-  // 1. Variable de entorno del sistema (la más prioritaria)
-  if (process.env.OPENAI_API_KEY) {
-    return process.env.OPENAI_API_KEY;
-  }
+  if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
 
-  // 2. Configuración global guardada con `qagen config`
   const config = readConfig();
-  if (config.openaiApiKey) {
-    return config.openaiApiKey;
-  }
+  if (config.openaiApiKey) return config.openaiApiKey;
 
-  // 3. Archivo .env local (útil en desarrollo)
   try {
     const dotenvPath = path.join(process.cwd(), '.env');
     if (fs.existsSync(dotenvPath)) {
@@ -76,124 +37,94 @@ function resolveApiKey() {
       if (match) return match[1].trim();
     }
   } catch {
-    // Si falla la lectura del .env, continuamos sin ella
+    // fall through
   }
 
   return null;
 }
 
-/**
- * Flujo interactivo para configurar QAgen.
- * Le pide al usuario su API key de OpenAI y la guarda globalmente.
- * Se ejecuta cuando el usuario corre `qagen config`.
- */
 async function runConfigWizard() {
-  console.log('\n⚙️  Configuración de QAgen\n');
+  console.log('\nQAgen Configuration\n');
 
   const currentConfig = readConfig();
   const hasKey = !!currentConfig.openaiApiKey;
 
   if (hasKey) {
-    const maskedKey = currentConfig.openaiApiKey.substring(0, 7) + '...' +
-                      currentConfig.openaiApiKey.slice(-4);
-    console.log(`   API key actual: ${maskedKey}`);
-    console.log('   Ingresa una nueva para reemplazarla, o presiona Enter para mantenerla.\n');
+    const masked = currentConfig.openaiApiKey.substring(0, 7) + '...' +
+                   currentConfig.openaiApiKey.slice(-4);
+    console.log(`Current API key: ${masked}`);
+    console.log('Press Enter to keep it, or type a new one.\n');
   } else {
-    console.log('   Necesitas una API key de OpenAI para usar QAgen.');
-    console.log('   Puedes obtenerla en: https://platform.openai.com/api-keys\n');
+    console.log('An OpenAI API key is required to use QAgen.');
+    console.log('Get one at: https://platform.openai.com/api-keys\n');
   }
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   const apiKey = await new Promise(resolve => {
-    rl.question('   OpenAI API Key: ', answer => {
+    rl.question('OpenAI API Key: ', answer => {
       rl.close();
       resolve(answer.trim());
     });
   });
 
-  // Si el usuario no ingresó nada y ya había una key, mantener la actual
   if (!apiKey && hasKey) {
-    console.log('\n   ✅ Configuración sin cambios.\n');
+    console.log('\nNo changes made.\n');
     return;
   }
 
-  // Validación básica del formato de la key
   if (!apiKey) {
-    console.log('\n   ❌ No ingresaste una API key. Configuración cancelada.\n');
+    console.log('\nNo API key provided. Configuration cancelled.\n');
     process.exit(1);
   }
 
   if (!apiKey.startsWith('sk-')) {
-    console.log('\n   ⚠️  La key no parece válida (debe empezar con "sk-").');
-    console.log('   Guardada de todas formas — verifica que sea correcta.\n');
+    console.log('\nWarning: key does not start with "sk-". Saved anyway — verify it is correct.\n');
   }
 
   writeConfig({ ...currentConfig, openaiApiKey: apiKey });
-
-  console.log('\n   ✅ API key guardada en ~/.qagen/config.json');
-  console.log('   Ya puedes usar: qagen https://tu-app.com\n');
+  console.log('\nAPI key saved to ~/.qagen/config.json');
+  console.log('You can now run: qagen https://your-app.com\n');
 }
 
-/**
- * Lee la memoria de selectores para un dominio específico.
- * Devuelve un array de { wrong, correct, context } o vacío si no hay memoria.
- *
- * @param {string} domain  ej: "the-internet.herokuapp.com"
- * @returns {Array<{wrong, correct, context}>}
- */
 function readMemory(domain) {
   try {
-    const memoryFile = path.join(CONFIG_DIR, 'memory.json');
-    if (!fs.existsSync(memoryFile)) return [];
-    const memory = JSON.parse(fs.readFileSync(memoryFile, 'utf8'));
+    if (!fs.existsSync(MEMORY_FILE)) return [];
+    const memory = JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8'));
     return memory[domain]?.selectors || [];
   } catch {
     return [];
   }
 }
 
-/**
- * Guarda un selector curado en la memoria del dominio.
- * Si ya existe una corrección para ese selector incorrecto, la actualiza.
- *
- * @param {string} domain
- * @param {string} wrong    selector que falló
- * @param {string} correct  selector correcto encontrado en DOM
- * @param {string} context  descripción de cuándo aplica esta corrección
- */
-
 function saveToMemory(domain, wrong, correct, context) {
   try {
-    const memoryFile = path.join(CONFIG_DIR, 'memory.json');
     let memory = {};
 
-    if (fs.existsSync(memoryFile)) {
-      memory = JSON.parse(fs.readFileSync(memoryFile, 'utf8'));
+    if (fs.existsSync(MEMORY_FILE)) {
+      memory = JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8'));
     }
 
     if (!memory[domain]) {
       memory[domain] = { selectors: [] };
     }
 
-    // Actualizar si ya existe, agregar si es nuevo
     const existing = memory[domain].selectors.findIndex(s => s.wrong === wrong);
+    const entry = { wrong, correct, context, assertion: 'toContainText' };
+
     if (existing >= 0) {
-      memory[domain].selectors[existing] = { wrong, correct, context, assertion: 'toContainText' };
+      memory[domain].selectors[existing] = entry;
     } else {
-      memory[domain].selectors.push({ wrong, correct, context, assertion: 'toContainText' });
+      memory[domain].selectors.push(entry);
     }
 
     if (!fs.existsSync(CONFIG_DIR)) {
       fs.mkdirSync(CONFIG_DIR, { recursive: true });
     }
 
-    fs.writeFileSync(memoryFile, JSON.stringify(memory, null, 2), 'utf8');
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2), 'utf8');
   } catch (err) {
-    console.log(`⚠️  No se pudo guardar en memoria: ${err.message}`);
+    console.log(`Warning: could not save to memory — ${err.message}`);
   }
 }
 
