@@ -1,19 +1,33 @@
 {
   "name": "qagen",
-  "version": "1.0.0",
+  "version": "0.1.0",
+  "description": "Autonomous QA agent that analyzes your web app, generates Playwright tests with AI, and self-heals when selectors break.",
+  "main": "index.js",
   "bin": {
     "qagen": "./index.js"
   },
-  "description": "",
-  "main": "index.js",
   "scripts": {
-    "test": "npx playwright test",
-    "test:report": "npx playwright test && npx playwright show-report",
+    "test": "npx playwright test --config .qagen/playwright.config.js",
     "generate": "node index.js"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "qa",
+    "testing",
+    "playwright",
+    "ai",
+    "automation",
+    "self-healing",
+    "test-generation"
+  ],
+  "author": "Esteban López",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EstebanLopp/qagen.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "type": "commonjs",
   "dependencies": {
     "@playwright/test": "^1.60.0",
