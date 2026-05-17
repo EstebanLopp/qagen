@@ -2,7 +2,7 @@
  * reporter.js
  *
  * Genera un reporte HTML de la sesión de QAgen.
- * El reporte va dentro de .qagen/ para no ensuciar el root del proyecto.
+ * Incluye: flujo detectado, resultados, healing, y análisis de fallos no resueltos.
  */
 
 const fs = require('fs');
@@ -57,8 +57,66 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * Genera el HTML de la sección de fallos no resueltos con análisis de IA.
+ */
+function buildFailureAnalysisSection(analyses) {
+  if (!analyses || analyses.length === 0) return '';
+
+  const typeLabels = {
+    selector_incorrecto: { label: 'Selector incorrecto', color: '#f59e0b', bg: '#fffbeb' },
+    texto_incorrecto:    { label: 'Texto incorrecto',    color: '#f59e0b', bg: '#fffbeb' },
+    elemento_ausente:    { label: 'Elemento ausente',    color: '#ef4444', bg: '#fef2f2' },
+    timing:              { label: 'Problema de timing',  color: '#8b5cf6', bg: '#f5f3ff' },
+    logica_de_test:      { label: 'Lógica del test',     color: '#6366f1', bg: '#eef2ff' },
+    bug_real:            { label: 'Posible bug real',    color: '#dc2626', bg: '#fef2f2' },
+    desconocido:         { label: 'Desconocido',         color: '#6b7280', bg: '#f9fafb' },
+  };
+
+  const rows = analyses.map(a => {
+    const typeInfo = typeLabels[a.type] || typeLabels.desconocido;
+    return `
+      <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <span style="background:${typeInfo.bg};color:${typeInfo.color};
+                       font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;">
+            ${escapeHtml(typeInfo.label)}
+          </span>
+          <span style="font-size:14px;font-weight:500;color:#1f2937;">
+            ${escapeHtml(a.testName)}
+          </span>
+        </div>
+        <p style="font-size:13px;color:#4b5563;margin-bottom:8px;line-height:1.5;">
+          ${escapeHtml(a.explanation)}
+        </p>
+        <div style="background:#f8fafc;border-left:3px solid ${typeInfo.color};
+                    padding:8px 12px;border-radius:0 4px 4px 0;">
+          <span style="font-size:12px;color:#6b7280;font-weight:600;">ACCIÓN RECOMENDADA: </span>
+          <span style="font-size:13px;color:#374151;">${escapeHtml(a.recommendation)}</span>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="card">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+                  letter-spacing:0.05em;margin-bottom:16px;">
+        🔬 Análisis de fallos no resueltos
+      </div>
+      <p style="font-size:13px;color:#6b7280;margin-bottom:16px;">
+        Estos fallos no pudieron ser curados automáticamente. El agente analizó cada uno
+        para ayudarte a entender qué salió mal.
+      </p>
+      ${rows}
+    </div>`;
+}
+
 function generateHTML(session) {
-  const { url, startTime, flow, testsFile, firstOutput, healing, finalOutput } = session;
+  const {
+    url, startTime, flow, testsFile,
+    firstOutput, healing, finalOutput,
+    failureAnalyses = []
+  } = session;
 
   const duration = formatDuration(startTime);
   const date = new Date().toLocaleString('es-CO', {
@@ -116,6 +174,9 @@ function generateHTML(session) {
       </div>
       ${healingRows ? `<div style="margin-top:8px;">${healingRows}</div>` : ''}
     </div>` : '';
+
+  // Sección de análisis de fallos — solo aparece si hay fallos sin resolver
+  const failureSection = buildFailureAnalysisSection(failureAnalyses);
 
   return `<!DOCTYPE html>
 <html lang="es">
@@ -195,6 +256,8 @@ function generateHTML(session) {
       ${healingSection}
     </div>
 
+    ${failureSection}
+
     <div style="text-align:center;font-size:12px;color:#9ca3af;padding:16px 0;">
       Generado por QAgen · El agente de QA autónomo
     </div>
@@ -204,12 +267,6 @@ function generateHTML(session) {
 </html>`;
 }
 
-/**
- * Genera y guarda el reporte HTML dentro de .qagen/.
- *
- * @param {object} session  datos de la sesión
- * @returns {string}  ruta del archivo generado
- */
 function generateReport(session) {
   const qagenDir = session.qagenDir || process.cwd();
   const html = generateHTML(session);

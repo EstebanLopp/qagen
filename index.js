@@ -5,6 +5,7 @@ const { crawlRoutes } = require('./src/crawler');
 const { healFailures } = require('./src/healer');
 const { generateReport } = require('./src/reporter');
 const { runConfigWizard } = require('./src/config');
+const { analyzeUnresolvedFailures } = require('./src/failure-analyzer');
 const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -12,7 +13,6 @@ const fs = require('fs');
 const command = process.argv[2];
 const mode = process.argv[3] || 'single';
 
-// Comando de configuración — no necesita URL
 if (command === 'config') {
   runConfigWizard().catch(console.error);
   return;
@@ -29,15 +29,11 @@ if (!url || url.startsWith('--')) {
   process.exit(1);
 }
 
-// Directorio de trabajo de QAgen dentro del proyecto del usuario.
-// Todo lo que QAgen genera va aquí — no ensucia el root del proyecto.
-// El usuario solo necesita agregar .qagen/ a su .gitignore.
 const QAGEN_DIR = path.join(process.cwd(), '.qagen');
 
 /**
- * Inicializa la carpeta .qagen/ con su estructura interna.
- * También agrega .qagen/ al .gitignore del usuario si existe,
- * para que no suba los archivos generados por accidente.
+ * Inicializa la carpeta .qagen/ con su estructura interna y
+ * agrega .qagen/ al .gitignore del usuario si existe.
  */
 function initQagenDir() {
   const dirs = [
@@ -49,7 +45,6 @@ function initQagenDir() {
 
   dirs.forEach(d => fs.mkdirSync(d, { recursive: true }));
 
-  // Agregar .qagen/ al .gitignore del usuario si existe y no está ya incluido
   const gitignorePath = path.join(process.cwd(), '.gitignore');
   if (fs.existsSync(gitignorePath)) {
     const content = fs.readFileSync(gitignorePath, 'utf8');
@@ -62,8 +57,6 @@ function initQagenDir() {
 
 /**
  * Genera el playwright.config.js dentro de .qagen/ si no existe.
- * Al pasarle --config a Playwright, este archivo se usa sin importar
- * el directorio desde donde se ejecute el comando.
  */
 function ensurePlaywrightConfig() {
   const configPath = path.join(QAGEN_DIR, 'playwright.config.js');
@@ -107,8 +100,7 @@ function clearPreviousTests() {
 }
 
 /**
- * Ejecuta los tests desde dentro de .qagen/ usando su propio config.
- * --config apunta al playwright.config.js de QAgen, no al del usuario.
+ * Ejecuta los tests y devuelve el output completo.
  */
 function runTests() {
   console.log('\n🧪 Ejecutando tests generados...\n');
@@ -168,7 +160,6 @@ function rerunTests() {
 }
 
 async function run() {
-  // Inicializar estructura .qagen/ antes de cualquier otra cosa
   initQagenDir();
   ensurePlaywrightConfig();
   clearPreviousTests();
@@ -181,6 +172,7 @@ async function run() {
     firstOutput: '',
     healing: { healed: 0, failed: 0, details: [] },
     finalOutput: null,
+    failureAnalyses: [],  // análisis de fallos no resueltos
     qagenDir: QAGEN_DIR
   };
 
@@ -215,12 +207,11 @@ async function run() {
     session.flow = result.flow;
   }
 
+  // Primera ejecución
   const { output, hasFailed } = runTests();
   session.firstOutput = output;
 
   if (hasFailed) {
-    // Pasamos QAGEN_DIR como cwd para que el healer resuelva
-    // las rutas de los archivos correctamente
     const healResult = await healFailures(output, QAGEN_DIR);
     session.healing = healResult;
 
@@ -233,6 +224,15 @@ async function run() {
     } else {
       console.log('\n⚠️  No se pudieron curar los fallos automáticamente');
     }
+
+    // Analizar los fallos que quedaron sin resolver.
+    // Usamos el output final si hubo healing, si no el primero.
+    const outputToAnalyze = session.finalOutput || output;
+    session.failureAnalyses = await analyzeUnresolvedFailures(
+      outputToAnalyze,
+      url,
+      healResult.healed
+    );
   }
 
   generateReport(session);
