@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+process.env.NODE_NO_WARNINGS = '1';
 
 const { analyzeApp } = require('./src/analyzer');
 const { crawlRoutes } = require('./src/crawler');
@@ -21,20 +22,16 @@ if (command === 'config') {
 const url = command;
 
 if (!url || url.startsWith('--')) {
-  console.log('\n🤖 QAgen — El agente de QA autónomo\n');
-  console.log('Uso:');
-  console.log('  qagen https://ejemplo.com          Analiza y testea una página');
-  console.log('  qagen https://ejemplo.com crawl    Detecta y testea todas las rutas');
-  console.log('  qagen config                       Configura tu API key de OpenAI\n');
+  console.log('\nQAgen — Autonomous QA agent\n');
+  console.log('Usage:');
+  console.log('  qagen https://your-app.com           Analyze and test a single page');
+  console.log('  qagen https://your-app.com crawl     Crawl and test all routes');
+  console.log('  qagen config                         Configure your OpenAI API key\n');
   process.exit(1);
 }
 
 const QAGEN_DIR = path.join(process.cwd(), '.qagen');
 
-/**
- * Inicializa la carpeta .qagen/ con su estructura interna y
- * agrega .qagen/ al .gitignore del usuario si existe.
- */
 function initQagenDir() {
   const dirs = [
     QAGEN_DIR,
@@ -49,15 +46,12 @@ function initQagenDir() {
   if (fs.existsSync(gitignorePath)) {
     const content = fs.readFileSync(gitignorePath, 'utf8');
     if (!content.includes('.qagen/')) {
-      fs.appendFileSync(gitignorePath, '\n# QAgen — archivos generados automáticamente\n.qagen/\n');
-      console.log('📝 .qagen/ agregado a .gitignore\n');
+      fs.appendFileSync(gitignorePath, '\n# QAgen generated files\n.qagen/\n');
+      console.log('.qagen/ added to .gitignore\n');
     }
   }
 }
 
-/**
- * Genera el playwright.config.js dentro de .qagen/ si no existe.
- */
 function ensurePlaywrightConfig() {
   const configPath = path.join(QAGEN_DIR, 'playwright.config.js');
   if (fs.existsSync(configPath)) return;
@@ -85,9 +79,6 @@ module.exports = defineConfig({
   fs.writeFileSync(configPath, config, 'utf8');
 }
 
-/**
- * Elimina todos los archivos .spec.js de sesiones anteriores.
- */
 function clearPreviousTests() {
   const dir = path.join(QAGEN_DIR, 'tests', 'generated');
   if (!fs.existsSync(dir)) return;
@@ -95,15 +86,12 @@ function clearPreviousTests() {
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.spec.js'));
   if (files.length > 0) {
     files.forEach(f => fs.unlinkSync(path.join(dir, f)));
-    console.log(`🧹 ${files.length} test(s) de sesiones anteriores eliminado(s)\n`);
+    console.log(`Cleared ${files.length} test file(s) from previous session\n`);
   }
 }
 
-/**
- * Ejecuta los tests y devuelve el output completo.
- */
 function runTests() {
-  console.log('\n🧪 Ejecutando tests generados...\n');
+  console.log('\nRunning tests...\n');
 
   const result = spawnSync(
     'npx',
@@ -115,7 +103,8 @@ function runTests() {
       cwd: QAGEN_DIR,
       shell: true,
       encoding: 'utf8',
-      stdio: ['inherit', 'pipe', 'pipe']
+      stdio: ['inherit', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1' }
     }
   );
 
@@ -126,18 +115,15 @@ function runTests() {
   const hasFailed = result.status === 1;
 
   if (result.status !== 0 && result.status !== 1) {
-    console.log(`\n⚠️  Playwright terminó con código inesperado: ${result.status}`);
-    if (result.error) console.log(`   Error: ${result.error.message}`);
+    console.log(`\nUnexpected Playwright exit code: ${result.status}`);
+    if (result.error) console.log(`Error: ${result.error.message}`);
   }
 
   return { output, hasFailed };
 }
 
-/**
- * Re-ejecuta los tests después del healing.
- */
 function rerunTests() {
-  console.log('\n🔁 Re-ejecutando tests después del healing...\n');
+  console.log('\nRe-running tests after healing...\n');
 
   const result = spawnSync(
     'npx',
@@ -149,7 +135,8 @@ function rerunTests() {
       cwd: QAGEN_DIR,
       shell: true,
       encoding: 'utf8',
-      stdio: ['inherit', 'pipe', 'pipe']
+      stdio: ['inherit', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1' }
     }
   );
 
@@ -172,33 +159,33 @@ async function run() {
     firstOutput: '',
     healing: { healed: 0, failed: 0, details: [] },
     finalOutput: null,
-    failureAnalyses: [],  // análisis de fallos no resueltos
+    failureAnalyses: [],
     qagenDir: QAGEN_DIR
   };
 
   if (mode === 'crawl') {
     const routes = await crawlRoutes(url);
-    console.log('\n🤖 Analizando cada ruta...\n');
+    console.log('\nAnalyzing routes...\n');
 
     const failed = [];
 
     for (let i = 0; i < routes.length; i++) {
       const route = routes[i];
-      console.log(`\n[${i + 1}/${routes.length}] ${route}`);
+      console.log(`[${i + 1}/${routes.length}] ${route}`);
 
       try {
         const result = await analyzeApp(route, QAGEN_DIR);
         session.testsFile = path.basename(result.filepath);
         session.flow = result.flow;
       } catch (err) {
-        console.log(`⚠️  Falló el análisis de ${route}: ${err.message}`);
+        console.log(`Failed to analyze ${route}: ${err.message}`);
         failed.push(route);
       }
     }
 
     if (failed.length > 0) {
-      console.log('\n⚠️  Rutas que fallaron:');
-      failed.forEach(r => console.log(`   → ${r}`));
+      console.log('\nFailed routes:');
+      failed.forEach(r => console.log(`  ${r}`));
     }
 
   } else {
@@ -207,7 +194,6 @@ async function run() {
     session.flow = result.flow;
   }
 
-  // Primera ejecución
   const { output, hasFailed } = runTests();
   session.firstOutput = output;
 
@@ -216,28 +202,23 @@ async function run() {
     session.healing = healResult;
 
     if (healResult.healed > 0) {
-      console.log(`\n✅ Healing completado: ${healResult.healed} test(s) curado(s)`);
+      console.log(`\nHealing complete: ${healResult.healed} test(s) fixed`);
       if (healResult.failed > 0) {
-        console.log(`⚠️  ${healResult.failed} fallo(s) no pudieron ser curados`);
+        console.log(`${healResult.failed} failure(s) could not be healed`);
       }
       session.finalOutput = rerunTests();
     } else {
-      console.log('\n⚠️  No se pudieron curar los fallos automáticamente');
+      console.log('\nCould not automatically heal failures');
     }
 
-    // Analizar los fallos que quedaron sin resolver.
-    // Usamos el output final si hubo healing, si no el primero.
     const outputToAnalyze = session.finalOutput || output;
-    session.failureAnalyses = await analyzeUnresolvedFailures(
-      outputToAnalyze,
-      url,
-    );
+    session.failureAnalyses = await analyzeUnresolvedFailures(outputToAnalyze, url);
   }
 
   generateReport(session);
 
-  console.log('\n📊 Reporte Playwright disponible en: .qagen/playwright-report/index.html');
-  console.log('   Ejecuta "npx playwright show-report .qagen/playwright-report" para abrirlo\n');
+  console.log('\nPlaywright report: .qagen/playwright-report/index.html');
+  console.log('Run "npx playwright show-report .qagen/playwright-report" to open it\n');
 }
 
 run().catch(console.error);

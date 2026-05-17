@@ -11,8 +11,8 @@ dotenv.config();
 const apiKey = resolveApiKey();
 
 if (!apiKey) {
-  console.error('\n❌ No se encontró una API key de OpenAI.');
-  console.error('   Ejecuta: qagen config\n');
+  console.error('\nError: OpenAI API key not found.');
+  console.error('Run: qagen config\n');
   process.exit(1);
 }
 
@@ -22,8 +22,7 @@ function detectPageCategory(url) {
   const u = url.toLowerCase();
   if (u.includes('basic_auth') || u.includes('digest_auth')) return 'auth';
   if (u.includes('download_secure')) return 'auth_required';
-  if (u.includes('dynamic_content')) return 'dynamic';
-  if (u.includes('typos')) return 'dynamic';
+  if (u.includes('dynamic_content') || u.includes('typos')) return 'dynamic';
   if (u.includes('entry_ad') || u.includes('exit_intent')) return 'modal';
   if (u.includes('context_menu')) return 'context_menu';
   if (u.includes('tinymce')) return 'iframe_editor';
@@ -32,15 +31,8 @@ function detectPageCategory(url) {
   return 'standard';
 }
 
-/**
- * Analiza una URL y genera tests de Playwright.
- *
- * @param {string} url
- * @param {string} qagenDir  ruta absoluta a .qagen/ del proyecto del usuario
- * @returns {{ filepath, flow }}
- */
 async function analyzeApp(url, qagenDir) {
-  console.log(`\n🔍 Analizando: ${url}\n`);
+  console.log(`\nAnalyzing: ${url}\n`);
 
   const browser = await chromium.launch();
   const page = await browser.newPage();
@@ -88,16 +80,14 @@ async function analyzeApp(url, qagenDir) {
     return result;
   });
 
-  const pageInfo = await page.evaluate(() => {
-    return {
-      title: document.title,
-      h1: document.querySelector('h1')?.innerText?.trim() || '',
-      h2: document.querySelector('h2')?.innerText?.trim() || '',
-      hasIframe: document.querySelectorAll('iframe').length > 0,
-      hasFileInput: document.querySelectorAll('input[type="file"]').length > 0,
-      hasShadowDOM: Array.from(document.querySelectorAll('*')).some(el => el.shadowRoot)
-    };
-  });
+  const pageInfo = await page.evaluate(() => ({
+    title: document.title,
+    h1: document.querySelector('h1')?.innerText?.trim() || '',
+    h2: document.querySelector('h2')?.innerText?.trim() || '',
+    hasIframe: document.querySelectorAll('iframe').length > 0,
+    hasFileInput: document.querySelectorAll('input[type="file"]').length > 0,
+    hasShadowDOM: Array.from(document.querySelectorAll('*')).some(el => el.shadowRoot)
+  }));
 
   const bodyHTML = await page.evaluate(() => {
     const main = document.querySelector('.example') ||
@@ -116,76 +106,76 @@ async function analyzeApp(url, qagenDir) {
 
   const flow = detectFlow(url, elements, pageInfo);
 
-  console.log(`✅ Elementos encontrados`);
-  console.log(`🧠 Flujo detectado: ${flow.type} (confianza: ${flow.confidence})`);
-  console.log(`🤖 Generando tests con IA...\n`);
+  console.log(`Flow detected: ${flow.type} (confidence: ${flow.confidence})`);
+
+  const domain = new URL(url).hostname;
+  const knownSelectors = readMemory(domain);
+
+  if (knownSelectors.length > 0) {
+    console.log(`Memory: ${knownSelectors.length} known selector(s) for ${domain}`);
+  }
+
+  console.log('Generating tests...\n');
 
   const pageCategory = detectPageCategory(url);
-  const result = await generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow);
+  const result = await generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow, knownSelectors);
 
   if (!result) {
-    throw new Error(`No se pudo generar código válido para ${url}`);
+    throw new Error(`Failed to generate valid test code for ${url}`);
   }
 
   const filepath = saveTests(result.code, url, qagenDir);
   return { filepath, flow };
 }
 
-async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow) {
+async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow, knownSelectors) {
   const categoryInstructions = {
-    auth: `INSTRUCCIÓN ESPECIAL - PÁGINA CON AUTENTICACIÓN:
-- El beforeEach debe usar: await page.goto('${url.replace('://', '://admin:admin@')}');
-- Para verificar contenido usa locators específicos: page.locator('h1'), page.locator('p')
-- NUNCA uses expect(page).toHaveText() — eso no existe. Usa expect(page.locator('...')).toBeVisible()
-- Testea solo visibilidad de elementos, no texto exacto`,
+    auth: `SPECIAL INSTRUCTION - AUTHENTICATED PAGE:
+- beforeEach must use: await page.goto('${url.replace('://', '://admin:admin@')}');
+- Use specific locators: page.locator('h1'), page.locator('p')
+- NEVER use expect(page).toHaveText() — use expect(page.locator('...')).toBeVisible()
+- Only test element visibility, not exact text`,
 
-    auth_required: `INSTRUCCIÓN ESPECIAL - PÁGINA PROTEGIDA:
-- Esta página requiere autenticación que no podemos proveer
-- Genera SOLO 1 test: verificar que la página responde (toHaveURL)
-- NO intentes acceder al contenido protegido`,
+    auth_required: `SPECIAL INSTRUCTION - PROTECTED PAGE:
+- This page requires authentication that cannot be provided
+- Generate ONLY 1 test: verify the page responds (toHaveURL)
+- Do NOT attempt to access protected content`,
 
-    dynamic: `INSTRUCCIÓN ESPECIAL - CONTENIDO DINÁMICO:
-- El contenido CAMBIA en cada carga, NUNCA verifiques texto exacto
-- Cuando un selector resuelve múltiples elementos usa .first(): expect(locator.first()).toBeVisible()
-- NUNCA uses toBeVisible() en un locator que puede resolver múltiples elementos sin .first()
-- Usa selectores de estructura como: page.locator('.content').first()`,
+    dynamic: `SPECIAL INSTRUCTION - DYNAMIC CONTENT:
+- Content CHANGES on each load, NEVER verify exact text
+- When a selector resolves multiple elements use .first(): expect(locator.first()).toBeVisible()
+- NEVER use toBeVisible() on a locator that may resolve multiple elements without .first()`,
 
-    modal: `INSTRUCCIÓN ESPECIAL - PÁGINA CON MODAL/OVERLAY:
-- El modal aparece automáticamente al cargar, puede tardar
-- Para verificar el modal: await page.waitForSelector('.modal', { state: 'visible' })
-- Para cerrar: busca el botón de cierre dentro del modal
-- NO asumas que el modal ya está visible al inicio del test`,
+    modal: `SPECIAL INSTRUCTION - MODAL/OVERLAY PAGE:
+- The modal appears automatically on load, may take time
+- To verify the modal: await page.waitForSelector('.modal', { state: 'visible' })
+- Do NOT assume the modal is already visible at test start`,
 
-    context_menu: `INSTRUCCIÓN ESPECIAL - MENÚ CONTEXTUAL:
-- Para disparar el context menu: await page.click('#hot-spot', { button: 'right' })
-- El alert aparece inmediatamente después del click derecho
-- Para aceptar el alert: page.on('dialog', dialog => dialog.accept())
-- Registra el handler ANTES del click`,
+    context_menu: `SPECIAL INSTRUCTION - CONTEXT MENU:
+- To trigger context menu: await page.click('#hot-spot', { button: 'right' })
+- Register the alert handler BEFORE the click
+- To accept: page.on('dialog', dialog => dialog.accept())`,
 
-    iframe_editor: `INSTRUCCIÓN ESPECIAL - EDITOR EN IFRAME (TinyMCE):
-- El editor carga dentro de un iframe que tarda en renderizar
-- USA: await page.waitForSelector('iframe[id*="mce"]', { state: 'attached' })
-- Para acceder al contenido: page.frameLocator('iframe[id*="mce"]').locator('body')
-- NUNCA uses toHaveValue() en un iframe editor — usa toContainText() en el body del iframe
-- Genera SOLO tests de visibilidad del iframe, no del contenido interno`,
+    iframe_editor: `SPECIAL INSTRUCTION - IFRAME EDITOR (TinyMCE):
+- Wait for iframe: await page.waitForSelector('iframe[id*="mce"]', { state: 'attached' })
+- Access content: page.frameLocator('iframe[id*="mce"]').locator('body')
+- NEVER use toHaveValue() in an iframe editor — use toContainText() on the iframe body
+- Only test iframe visibility, not internal content`,
 
-    nested_frames: `INSTRUCCIÓN ESPECIAL - FRAMES ANIDADOS:
-- Esta página usa frames HTML clásicos, no iframes modernos
-- Accede con: page.frame({ name: 'frame-top' }) o page.frame({ url: /.*/ })
-- SOLO testea que los frames existen: expect(page.frame('frame-top')).not.toBeNull()
-- NO intentes acceder al contenido dentro de los frames`,
+    nested_frames: `SPECIAL INSTRUCTION - NESTED FRAMES:
+- This page uses classic HTML frames, not modern iframes
+- Access with: page.frame({ name: 'frame-top' })
+- ONLY test that frames exist: expect(page.frame('frame-top')).not.toBeNull()`,
 
-    key_presses: `INSTRUCCIÓN ESPECIAL - KEY PRESSES:
-- El input tiene id="target". Para enviar teclas DEBES hacer click primero:
-  await page.click('#target');
-  await page.press('#target', 'Enter');
-- El resultado aparece en #result
-- Usa toContainText('You entered:') sin especificar la tecla exacta
-- NUNCA presiones teclas sin hacer click en el input primero`,
+    key_presses: `SPECIAL INSTRUCTION - KEY PRESSES:
+- Click the input before pressing keys: await page.click('#target');
+- Then: await page.press('#target', 'Enter');
+- Result appears in #result
+- Use toContainText('You entered:') without specifying the exact key`,
 
-    iframe: `INSTRUCCIÓN ESPECIAL - PÁGINA CON IFRAME:
-- Usa page.frameLocator('selector') para acceder al contenido del iframe
-- Verifica que el iframe existe antes de interactuar: toBeVisible()`,
+    iframe: `SPECIAL INSTRUCTION - IFRAME PAGE:
+- Use page.frameLocator('selector') to access iframe content
+- Verify the iframe exists before interacting: toBeVisible()`,
 
     standard: ''
   };
@@ -194,100 +184,84 @@ async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, fl
 
   const restrictions = [];
   if (pageInfo.hasIframe && pageCategory === 'standard') {
-    restrictions.push('- La página tiene iframes: usa page.frameLocator() para su contenido');
+    restrictions.push('- Page has iframes: use page.frameLocator() for their content');
   }
   if (pageInfo.hasShadowDOM) {
-    restrictions.push('- La página tiene Shadow DOM: NO generes tests para su contenido interno');
+    restrictions.push('- Page has Shadow DOM: do NOT generate tests for its internal content');
   }
   if (pageInfo.hasFileInput) {
-    restrictions.push('- La página tiene input de archivo: usa page.setInputFiles() SOLO para file inputs');
+    restrictions.push('- Page has file input: use page.setInputFiles() ONLY for file inputs');
   }
 
   const flowContext = flow.type !== 'unknown'
     ? `
-CONTEXTO DE FLUJO (resultado del análisis semántico de la página):
-- Tipo de flujo detectado: ${flow.type}
-- Confianza de la detección: ${flow.confidence}
-- Escenarios críticos que DEBES cubrir en este orden de prioridad:
+FLOW CONTEXT (result of semantic page analysis):
+- Detected flow: ${flow.type}
+- Confidence: ${flow.confidence}
+- Critical scenarios to cover in priority order:
 ${flow.testingHints.map((hint, i) => `  ${i + 1}. ${hint}`).join('\n')}
 
-Estos escenarios están ordenados por importancia de negocio. Priorizalos
-sobre cualquier otro test que puedas considerar generar.
+These scenarios are ordered by business importance. Prioritize them over any others.
 `
     : '';
-
-  const domain = new URL(url).hostname;
-  const knownSelectors = readMemory(domain);
 
   const memoryContext = knownSelectors.length > 0
     ? `
-MEMORIA DE SELECTORES (correcciones aprendidas de sesiones anteriores en este dominio):
-${knownSelectors.map(s => `- NUNCA uses "${s.wrong}" para "${s.context}". Usa locator("${s.correct}").${s.assertion || 'toContainText'} en su lugar.`).join('\n')}
+SELECTOR MEMORY (corrections learned from previous sessions on this domain):
+${knownSelectors.map(s => `- NEVER use "${s.wrong}" for "${s.context}". Use locator("${s.correct}").${s.assertion || 'toContainText'} instead.`).join('\n')}
 
-Esta información viene de errores reales detectados y corregidos automáticamente.
-Respétala estrictamente.
+This comes from real errors detected and corrected automatically. Follow it strictly.
 `
     : '';
 
-  if (knownSelectors.length > 0) {
-    console.log(`🧠 Memoria activa: ${knownSelectors.length} selector(es) conocido(s) para ${domain}\n`);
-  }
-
   const prompt = `
-Eres un experto en testing automatizado con Playwright v1.60.
-Genera tests válidos para la URL: ${url}
+You are an expert in automated testing with Playwright v1.60.
+Generate valid tests for the URL: ${url}
 
-ESTADO REAL DE LA PÁGINA (esto es lo que existe, no inventes nada más):
-- Título real: "${pageInfo.title}"
-- H1 real: "${pageInfo.h1}"
-- H2 real: "${pageInfo.h2}"
+REAL PAGE STATE (only test what exists here):
+- Title: "${pageInfo.title}"
+- H1: "${pageInfo.h1}"
+- H2: "${pageInfo.h2}"
 
-HTML real (úsalo para entender el comportamiento):
+Real HTML:
 ${bodyHTML}
 
-Elementos con su estado actual:
-- Botones: ${JSON.stringify(elements.buttons)}
+Current element state:
+- Buttons: ${JSON.stringify(elements.buttons)}
 - Inputs: ${JSON.stringify(elements.inputs)}
-- Formularios: ${JSON.stringify(elements.forms)}
+- Forms: ${JSON.stringify(elements.forms)}
 - Links: ${JSON.stringify(elements.links)}
 
 ${flowContext}
 ${memoryContext}
 ${specialInstruction ? `\n${specialInstruction}\n` : ''}
-${restrictions.length > 0 ? '\nRESTRICCIONES ESPECÍFICAS:\n' + restrictions.join('\n') : ''}
+${restrictions.length > 0 ? '\nSPECIFIC RESTRICTIONS:\n' + restrictions.join('\n') : ''}
 
-REGLAS CRÍTICAS:
-1. Usa SOLO: const { test, expect } = require('@playwright/test');
-2. Para autenticación básica/digest: await page.goto('https://admin:admin@url');
-   NUNCA uses page.authenticate().
-3. Para sliders (input[type="range"]): usa page.fill() o keyboard.press(), NUNCA setInputFiles().
-4. Para descargas:
-   const [download] = await Promise.all([
-     page.waitForEvent('download'),
-     page.click('selector')
-   ]);
-5. Assertions válidas: toBeVisible(), toBeHidden(), toBeEnabled(), toBeDisabled(),
-   toBeChecked(), toHaveURL(), toHaveText(), toHaveAttribute(), toContainText().
-   NUNCA uses toBeClickable().
-6. SOLO testea lo que existe en el HTML. No inventes lógica.
-7. Para checkboxes: usa el campo "checked" del estado real para determinar el estado inicial.
-8. Genera máximo 5 tests. Prioriza flujos reales del usuario.
-9. NO generes tests para links a elementalselenium.com.
-10. Para toHaveTitle() usa el título real proporcionado arriba, como string exacto.
-11. Cierra TODOS los bloques con llaves.
-12. Para verificar que un campo password enmascara el texto, usa SIEMPRE:
+CRITICAL RULES:
+1. Use ONLY: const { test, expect } = require('@playwright/test');
+2. For basic/digest auth: await page.goto('https://admin:admin@url'); NEVER use page.authenticate().
+3. For sliders (input[type="range"]): use page.fill() or keyboard.press(), NEVER setInputFiles().
+4. For downloads: const [download] = await Promise.all([page.waitForEvent('download'), page.click('selector')]);
+5. Valid assertions: toBeVisible(), toBeHidden(), toBeEnabled(), toBeDisabled(), toBeChecked(), toHaveURL(), toHaveText(), toHaveAttribute(), toContainText(). NEVER use toBeClickable().
+6. ONLY test what exists in the HTML. Do not invent logic.
+7. For checkboxes: use the "checked" field from real state to determine initial state.
+8. Generate maximum 5 tests. Prioritize real user flows.
+9. Do NOT generate tests for links to elementalselenium.com.
+10. For toHaveTitle() use the exact real title provided above.
+11. Close ALL blocks with braces.
+12. To verify a password field masks text, ALWAYS use:
     await expect(page.locator('input[type="password"]')).toHaveAttribute('type', 'password');
-    NUNCA verifiques el valor del campo ni uses .not.toBe() para esto.
+    NEVER check the field value or use .not.toBe() for this.
 
-Estructura exacta:
+Exact structure:
 const { test, expect } = require('@playwright/test');
 
-test.describe('Nombre descriptivo', () => {
+test.describe('Descriptive name', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('${url}');
   });
 
-  test('descripcion', async ({ page }) => {
+  test('description', async ({ page }) => {
     // test
   });
 });
@@ -304,18 +278,15 @@ test.describe('Nombre descriptivo', () => {
         messages: [
           {
             role: 'system',
-            content: 'Eres un generador de código Playwright. Respondes ÚNICAMENTE con código JavaScript válido y completo. Sin explicaciones, sin markdown, sin backticks, sin texto adicional. El código debe poder ejecutarse con npx playwright test sin modificaciones.'
+            content: 'You are a Playwright code generator. Respond ONLY with valid, complete JavaScript code. No explanations, no markdown, no backticks, no additional text. The code must run with npx playwright test without modifications.'
           },
-          {
-            role: 'user',
-            content: prompt
-          }
+          { role: 'user', content: prompt }
         ],
         max_tokens: 2000,
         temperature: 0.1
       });
     } catch (apiError) {
-      console.log(`⚠️  Intento ${attempt}/${maxRetries}: error al llamar OpenAI — ${apiError.message}`);
+      console.log(`API call failed (attempt ${attempt}/${maxRetries}): ${apiError.message}`);
       if (attempt === maxRetries) return null;
       continue;
     }
@@ -328,21 +299,13 @@ test.describe('Nombre descriptivo', () => {
       new Function(code);
       return { code, valid: true };
     } catch (syntaxError) {
-      console.log(`⚠️  Intento ${attempt}/${maxRetries}: código inválido — ${syntaxError.message}`);
+      console.log(`Invalid code syntax (attempt ${attempt}/${maxRetries}): ${syntaxError.message}`);
     }
   }
 
   return null;
 }
 
-/**
- * Guarda el código de tests en .qagen/tests/generated/.
- *
- * @param {string} code
- * @param {string} url
- * @param {string} qagenDir  ruta absoluta a .qagen/
- * @returns {string}  ruta absoluta del archivo generado
- */
 function saveTests(code, url, qagenDir) {
   const domain = new URL(url).hostname.replace(/\./g, '_');
   const filename = `${domain}_${Date.now()}.spec.js`;
@@ -366,7 +329,7 @@ function saveTests(code, url, qagenDir) {
   );
 
   fs.writeFileSync(filepath, clean);
-  console.log(`✅ Tests guardados en: .qagen/tests/generated/${filename}\n`);
+  console.log(`Tests saved: .qagen/tests/generated/${filename}\n`);
 
   return filepath;
 }

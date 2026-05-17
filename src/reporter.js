@@ -1,10 +1,3 @@
-/**
- * reporter.js
- *
- * Genera un reporte HTML de la sesión de QAgen.
- * Incluye: flujo detectado, resultados, healing, y análisis de fallos no resueltos.
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -31,20 +24,18 @@ function parseTestResults(output) {
 function formatDuration(startTime) {
   const seconds = Math.round((Date.now() - startTime) / 1000);
   if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}m ${s}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function flowBadge(flowType) {
   const badges = {
-    login:       { emoji: '🔐', label: 'Login',       color: '#3b82f6' },
-    register:    { emoji: '📝', label: 'Registro',    color: '#8b5cf6' },
-    checkout:    { emoji: '🛒', label: 'Checkout',    color: '#f59e0b' },
-    search:      { emoji: '🔍', label: 'Búsqueda',    color: '#06b6d4' },
-    'crud-form': { emoji: '📋', label: 'Formulario',  color: '#10b981' },
-    dashboard:   { emoji: '📊', label: 'Dashboard',   color: '#6366f1' },
-    unknown:     { emoji: '❓', label: 'Desconocido', color: '#6b7280' },
+    login:       { emoji: '🔐', label: 'Login',      color: '#3b82f6' },
+    register:    { emoji: '📝', label: 'Register',   color: '#8b5cf6' },
+    checkout:    { emoji: '🛒', label: 'Checkout',   color: '#f59e0b' },
+    search:      { emoji: '🔍', label: 'Search',     color: '#06b6d4' },
+    'crud-form': { emoji: '📋', label: 'Form',       color: '#10b981' },
+    dashboard:   { emoji: '📊', label: 'Dashboard',  color: '#6366f1' },
+    unknown:     { emoji: '❓', label: 'Unknown',    color: '#6b7280' },
   };
   return badges[flowType] || badges.unknown;
 }
@@ -57,20 +48,17 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-/**
- * Genera el HTML de la sección de fallos no resueltos con análisis de IA.
- */
 function buildFailureAnalysisSection(analyses) {
   if (!analyses || analyses.length === 0) return '';
 
   const typeLabels = {
-    selector_incorrecto: { label: 'Selector incorrecto', color: '#f59e0b', bg: '#fffbeb' },
-    texto_incorrecto:    { label: 'Texto incorrecto',    color: '#f59e0b', bg: '#fffbeb' },
-    elemento_ausente:    { label: 'Elemento ausente',    color: '#ef4444', bg: '#fef2f2' },
-    timing:              { label: 'Problema de timing',  color: '#8b5cf6', bg: '#f5f3ff' },
-    logica_de_test:      { label: 'Lógica del test',     color: '#6366f1', bg: '#eef2ff' },
-    bug_real:            { label: 'Posible bug real',    color: '#dc2626', bg: '#fef2f2' },
-    desconocido:         { label: 'Desconocido',         color: '#6b7280', bg: '#f9fafb' },
+    selector_incorrecto: { label: 'Wrong selector',   color: '#f59e0b', bg: '#fffbeb' },
+    texto_incorrecto:    { label: 'Wrong text',        color: '#f59e0b', bg: '#fffbeb' },
+    elemento_ausente:    { label: 'Missing element',   color: '#ef4444', bg: '#fef2f2' },
+    timing:              { label: 'Timing issue',      color: '#8b5cf6', bg: '#f5f3ff' },
+    logica_de_test:      { label: 'Test logic',        color: '#6366f1', bg: '#eef2ff' },
+    bug_real:            { label: 'Possible bug',      color: '#dc2626', bg: '#fef2f2' },
+    desconocido:         { label: 'Unknown',           color: '#6b7280', bg: '#f9fafb' },
   };
 
   const rows = analyses.map(a => {
@@ -91,7 +79,7 @@ function buildFailureAnalysisSection(analyses) {
         </p>
         <div style="background:#f8fafc;border-left:3px solid ${typeInfo.color};
                     padding:8px 12px;border-radius:0 4px 4px 0;">
-          <span style="font-size:12px;color:#6b7280;font-weight:600;">ACCIÓN RECOMENDADA: </span>
+          <span style="font-size:12px;color:#6b7280;font-weight:600;">RECOMMENDED ACTION: </span>
           <span style="font-size:13px;color:#374151;">${escapeHtml(a.recommendation)}</span>
         </div>
       </div>`;
@@ -101,11 +89,11 @@ function buildFailureAnalysisSection(analyses) {
     <div class="card">
       <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
                   letter-spacing:0.05em;margin-bottom:16px;">
-        🔬 Análisis de fallos no resueltos
+        Unresolved failures — root cause analysis
       </div>
       <p style="font-size:13px;color:#6b7280;margin-bottom:16px;">
-        Estos fallos no pudieron ser curados automáticamente. El agente analizó cada uno
-        para ayudarte a entender qué salió mal.
+        These failures could not be healed automatically. QAgen analyzed each one
+        to help you understand what went wrong.
       </p>
       ${rows}
     </div>`;
@@ -119,7 +107,7 @@ function generateHTML(session) {
   } = session;
 
   const duration = formatDuration(startTime);
-  const date = new Date().toLocaleString('es-CO', {
+  const date = new Date().toLocaleString('en-US', {
     dateStyle: 'full',
     timeStyle: 'short'
   });
@@ -147,7 +135,7 @@ function generateHTML(session) {
   }).join('');
 
   const healingRows = healing.details.map(d => {
-    const isSuccess = d.startsWith('✅');
+    const isSuccess = d.startsWith('OK');
     const bg = isSuccess ? '#f0fdf4' : '#fef2f2';
     const color = isSuccess ? '#065f46' : '#7f1d1d';
     return `
@@ -160,30 +148,29 @@ function generateHTML(session) {
   const healingSection = healing.healed > 0 || healing.failed > 0 ? `
     <div style="margin-top:32px;">
       <h2 style="font-size:18px;font-weight:600;color:#1f2937;margin-bottom:16px;">
-        🔧 Auto-healing
+        Self-healing
       </h2>
       <div style="display:flex;gap:16px;margin-bottom:16px;">
         <div style="flex:1;background:#f0fdf4;border-radius:8px;padding:16px;text-align:center;">
           <div style="font-size:28px;font-weight:700;color:#10b981;">${healing.healed}</div>
-          <div style="font-size:13px;color:#065f46;margin-top:4px;">Tests curados</div>
+          <div style="font-size:13px;color:#065f46;margin-top:4px;">Tests healed</div>
         </div>
         <div style="flex:1;background:#fef2f2;border-radius:8px;padding:16px;text-align:center;">
           <div style="font-size:28px;font-weight:700;color:#ef4444;">${healing.failed}</div>
-          <div style="font-size:13px;color:#7f1d1d;margin-top:4px;">No pudieron curarse</div>
+          <div style="font-size:13px;color:#7f1d1d;margin-top:4px;">Could not heal</div>
         </div>
       </div>
       ${healingRows ? `<div style="margin-top:8px;">${healingRows}</div>` : ''}
     </div>` : '';
 
-  // Sección de análisis de fallos — solo aparece si hay fallos sin resolver
   const failureSection = buildFailureAnalysisSection(failureAnalyses);
 
   return `<!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>QAgen — Reporte de sesión</title>
+  <title>QAgen — Session report</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -207,31 +194,30 @@ function generateHTML(session) {
 
     <div style="margin-bottom:24px;">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-        <span style="font-size:24px;">🤖</span>
         <span style="font-size:22px;font-weight:700;color:#1f2937;">QAgen</span>
-        <span style="font-size:13px;color:#6b7280;margin-left:4px;">Reporte de sesión</span>
+        <span style="font-size:13px;color:#6b7280;">Session report</span>
       </div>
-      <div style="font-size:13px;color:#9ca3af;">${date} · Duración: ${duration}</div>
+      <div style="font-size:13px;color:#9ca3af;">${date} · Duration: ${duration}</div>
     </div>
 
     <div class="card">
       <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
-                  letter-spacing:0.05em;margin-bottom:8px;">URL analizada</div>
+                  letter-spacing:0.05em;margin-bottom:8px;">URL analyzed</div>
       <div style="font-size:15px;color:#2563eb;word-break:break-all;">${escapeHtml(url)}</div>
       <div style="font-size:12px;color:#9ca3af;margin-top:6px;">
-        Archivo generado: <code style="color:#374151;">${escapeHtml(testsFile)}</code>
+        Generated file: <code style="color:#374151;">${escapeHtml(testsFile)}</code>
       </div>
     </div>
 
     <div class="card">
       <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
-                  letter-spacing:0.05em;margin-bottom:12px;">Flujo crítico detectado</div>
+                  letter-spacing:0.05em;margin-bottom:12px;">Detected flow</div>
       <div style="display:flex;align-items:center;gap:12px;">
         <span style="font-size:32px;">${badge.emoji}</span>
         <div>
           <div style="font-size:20px;font-weight:700;color:${badge.color};">${badge.label}</div>
           <div style="font-size:13px;color:#6b7280;margin-top:2px;">
-            Confianza: <span style="font-weight:600;color:#374151;">${flow.confidence}</span>
+            Confidence: <span style="font-weight:600;color:#374151;">${flow.confidence}</span>
           </div>
         </div>
       </div>
@@ -240,12 +226,12 @@ function generateHTML(session) {
     <div class="card">
       <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
                   letter-spacing:0.05em;margin-bottom:16px;">
-        Resultados${finalResults ? ' (después del healing)' : ''}
+        Results${finalResults ? ' (after healing)' : ''}
       </div>
 
       <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:20px;">
         <span style="font-size:48px;font-weight:700;color:${rateColor};">${successRate}%</span>
-        <span style="font-size:15px;color:#6b7280;">${passedTests} de ${totalTests} tests pasaron</span>
+        <span style="font-size:15px;color:#6b7280;">${passedTests} of ${totalTests} tests passed</span>
       </div>
 
       <div style="height:8px;background:#f3f4f6;border-radius:4px;margin-bottom:24px;overflow:hidden;">
@@ -259,7 +245,7 @@ function generateHTML(session) {
     ${failureSection}
 
     <div style="text-align:center;font-size:12px;color:#9ca3af;padding:16px 0;">
-      Generado por QAgen · El agente de QA autónomo
+      Generated by QAgen
     </div>
 
   </div>
@@ -272,7 +258,7 @@ function generateReport(session) {
   const html = generateHTML(session);
   const outputPath = path.join(qagenDir, 'qagen-report.html');
   fs.writeFileSync(outputPath, html, 'utf8');
-  console.log(`\n📋 Reporte QAgen generado: .qagen/qagen-report.html`);
+  console.log('Session report: .qagen/qagen-report.html');
   return outputPath;
 }
 
