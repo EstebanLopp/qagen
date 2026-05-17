@@ -1,0 +1,18 @@
+# Archivos de desarrollo
+repomix-output.xml
+*.xml
+*.log
+
+# Carpetas de desarrollo
+.qagen/
+test-results/
+playwright-report/
+tests/
+
+# Archivos de configuración local
+.env
+.env.*
+playwright.config.js
+
+# Archivos temporales
+*.tgz
