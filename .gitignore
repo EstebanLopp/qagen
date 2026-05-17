@@ -3,3 +3,5 @@ node_modules
 test-results
 playwright-report
 qagen-report.html
+# QAgen — archivos generados automáticamente
+.qagen/

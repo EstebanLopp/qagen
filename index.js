@@ -18,7 +18,6 @@ if (command === 'config') {
   return;
 }
 
-// A partir de aquí, command es la URL
 const url = command;
 
 if (!url || url.startsWith('--')) {
@@ -30,31 +29,44 @@ if (!url || url.startsWith('--')) {
   process.exit(1);
 }
 
-/**
- * Elimina todos los archivos .spec.js de sesiones anteriores.
- * Cada ejecución de QAgen es una sesión nueva — mezclar tests
- * de sesiones distintas produce reportes incorrectos y tiempos
- * de ejecución que crecen indefinidamente.
- */
-function clearPreviousTests() {
-  const dir = path.join(process.cwd(), 'tests', 'generated');
-  if (!fs.existsSync(dir)) return;
+// Directorio de trabajo de QAgen dentro del proyecto del usuario.
+// Todo lo que QAgen genera va aquí — no ensucia el root del proyecto.
+// El usuario solo necesita agregar .qagen/ a su .gitignore.
+const QAGEN_DIR = path.join(process.cwd(), '.qagen');
 
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.spec.js'));
-  if (files.length > 0) {
-    files.forEach(f => fs.unlinkSync(path.join(dir, f)));
-    console.log(`🧹 ${files.length} test(s) de sesiones anteriores eliminado(s)\n`);
+/**
+ * Inicializa la carpeta .qagen/ con su estructura interna.
+ * También agrega .qagen/ al .gitignore del usuario si existe,
+ * para que no suba los archivos generados por accidente.
+ */
+function initQagenDir() {
+  const dirs = [
+    QAGEN_DIR,
+    path.join(QAGEN_DIR, 'tests', 'generated'),
+    path.join(QAGEN_DIR, 'playwright-report'),
+    path.join(QAGEN_DIR, 'test-results'),
+  ];
+
+  dirs.forEach(d => fs.mkdirSync(d, { recursive: true }));
+
+  // Agregar .qagen/ al .gitignore del usuario si existe y no está ya incluido
+  const gitignorePath = path.join(process.cwd(), '.gitignore');
+  if (fs.existsSync(gitignorePath)) {
+    const content = fs.readFileSync(gitignorePath, 'utf8');
+    if (!content.includes('.qagen/')) {
+      fs.appendFileSync(gitignorePath, '\n# QAgen — archivos generados automáticamente\n.qagen/\n');
+      console.log('📝 .qagen/ agregado a .gitignore\n');
+    }
   }
 }
 
 /**
- * Verifica si existe playwright.config.js en el directorio actual.
- * Si no existe, lo genera automáticamente con la configuración
- * correcta para QAgen. Así el CLI funciona desde cualquier carpeta
- * sin que el usuario tenga que configurar nada manualmente.
+ * Genera el playwright.config.js dentro de .qagen/ si no existe.
+ * Al pasarle --config a Playwright, este archivo se usa sin importar
+ * el directorio desde donde se ejecute el comando.
  */
 function ensurePlaywrightConfig() {
-  const configPath = path.join(process.cwd(), 'playwright.config.js');
+  const configPath = path.join(QAGEN_DIR, 'playwright.config.js');
   if (fs.existsSync(configPath)) return;
 
   const config = `const { defineConfig } = require('@playwright/test');
@@ -78,21 +90,37 @@ module.exports = defineConfig({
 `;
 
   fs.writeFileSync(configPath, config, 'utf8');
-  console.log('⚙️  playwright.config.js generado automáticamente\n');
 }
 
 /**
- * Ejecuta los tests y devuelve el output como string además de
- * mostrarlo en consola.
+ * Elimina todos los archivos .spec.js de sesiones anteriores.
+ */
+function clearPreviousTests() {
+  const dir = path.join(QAGEN_DIR, 'tests', 'generated');
+  if (!fs.existsSync(dir)) return;
+
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.spec.js'));
+  if (files.length > 0) {
+    files.forEach(f => fs.unlinkSync(path.join(dir, f)));
+    console.log(`🧹 ${files.length} test(s) de sesiones anteriores eliminado(s)\n`);
+  }
+}
+
+/**
+ * Ejecuta los tests desde dentro de .qagen/ usando su propio config.
+ * --config apunta al playwright.config.js de QAgen, no al del usuario.
  */
 function runTests() {
   console.log('\n🧪 Ejecutando tests generados...\n');
 
   const result = spawnSync(
     'npx',
-    ['playwright', 'test', 'tests/generated'],
+    [
+      'playwright', 'test',
+      '--config', path.join(QAGEN_DIR, 'playwright.config.js')
+    ],
     {
-      cwd: process.cwd(),
+      cwd: QAGEN_DIR,
       shell: true,
       encoding: 'utf8',
       stdio: ['inherit', 'pipe', 'pipe']
@@ -114,17 +142,19 @@ function runTests() {
 }
 
 /**
- * Re-ejecuta los tests después del healing para confirmar que
- * los parches funcionaron.
+ * Re-ejecuta los tests después del healing.
  */
 function rerunTests() {
   console.log('\n🔁 Re-ejecutando tests después del healing...\n');
 
   const result = spawnSync(
     'npx',
-    ['playwright', 'test', 'tests/generated'],
+    [
+      'playwright', 'test',
+      '--config', path.join(QAGEN_DIR, 'playwright.config.js')
+    ],
     {
-      cwd: process.cwd(),
+      cwd: QAGEN_DIR,
       shell: true,
       encoding: 'utf8',
       stdio: ['inherit', 'pipe', 'pipe']
@@ -138,8 +168,10 @@ function rerunTests() {
 }
 
 async function run() {
-  clearPreviousTests();
+  // Inicializar estructura .qagen/ antes de cualquier otra cosa
+  initQagenDir();
   ensurePlaywrightConfig();
+  clearPreviousTests();
 
   const session = {
     url,
@@ -148,7 +180,8 @@ async function run() {
     testsFile: '',
     firstOutput: '',
     healing: { healed: 0, failed: 0, details: [] },
-    finalOutput: null
+    finalOutput: null,
+    qagenDir: QAGEN_DIR
   };
 
   if (mode === 'crawl') {
@@ -162,7 +195,7 @@ async function run() {
       console.log(`\n[${i + 1}/${routes.length}] ${route}`);
 
       try {
-        const result = await analyzeApp(route);
+        const result = await analyzeApp(route, QAGEN_DIR);
         session.testsFile = path.basename(result.filepath);
         session.flow = result.flow;
       } catch (err) {
@@ -177,7 +210,7 @@ async function run() {
     }
 
   } else {
-    const result = await analyzeApp(url);
+    const result = await analyzeApp(url, QAGEN_DIR);
     session.testsFile = path.basename(result.filepath);
     session.flow = result.flow;
   }
@@ -186,7 +219,9 @@ async function run() {
   session.firstOutput = output;
 
   if (hasFailed) {
-    const healResult = await healFailures(output, process.cwd());
+    // Pasamos QAGEN_DIR como cwd para que el healer resuelva
+    // las rutas de los archivos correctamente
+    const healResult = await healFailures(output, QAGEN_DIR);
     session.healing = healResult;
 
     if (healResult.healed > 0) {
@@ -202,8 +237,8 @@ async function run() {
 
   generateReport(session);
 
-  console.log('\n📊 Reporte Playwright: playwright-report/index.html');
-  console.log('   Ejecuta "npx playwright show-report" para abrirlo\n');
+  console.log('\n📊 Reporte Playwright disponible en: .qagen/playwright-report/index.html');
+  console.log('   Ejecuta "npx playwright show-report .qagen/playwright-report" para abrirlo\n');
 }
 
 run().catch(console.error);

@@ -8,8 +8,6 @@ const { resolveApiKey, readMemory } = require('./config');
 
 dotenv.config();
 
-// Resolver la API key desde todas las fuentes posibles.
-// Orden: variable de entorno → config global → .env local
 const apiKey = resolveApiKey();
 
 if (!apiKey) {
@@ -34,7 +32,14 @@ function detectPageCategory(url) {
   return 'standard';
 }
 
-async function analyzeApp(url) {
+/**
+ * Analiza una URL y genera tests de Playwright.
+ *
+ * @param {string} url
+ * @param {string} qagenDir  ruta absoluta a .qagen/ del proyecto del usuario
+ * @returns {{ filepath, flow }}
+ */
+async function analyzeApp(url, qagenDir) {
   console.log(`\n🔍 Analizando: ${url}\n`);
 
   const browser = await chromium.launch();
@@ -122,7 +127,7 @@ async function analyzeApp(url) {
     throw new Error(`No se pudo generar código válido para ${url}`);
   }
 
-  const filepath = saveTests(result.code, url);
+  const filepath = saveTests(result.code, url, qagenDir);
   return { filepath, flow };
 }
 
@@ -211,24 +216,19 @@ sobre cualquier otro test que puedas considerar generar.
 `
     : '';
 
-  // Leer memoria de selectores conocidos para este dominio.
-  // Si el healer curó selectores en sesiones anteriores, los pasamos
-  // al prompt para que la IA no cometa los mismos errores.
   const domain = new URL(url).hostname;
   const knownSelectors = readMemory(domain);
 
   const memoryContext = knownSelectors.length > 0
     ? `
-  MEMORIA DE SELECTORES (correcciones aprendidas de sesiones anteriores en este dominio):
-  ${knownSelectors.map(s => `- NUNCA uses "${s.wrong}" para "${s.context}". Usa locator("${s.correct}").${s.assertion || 'toContainText'} en su lugar.`).join('\n')}
+MEMORIA DE SELECTORES (correcciones aprendidas de sesiones anteriores en este dominio):
+${knownSelectors.map(s => `- NUNCA uses "${s.wrong}" para "${s.context}". Usa locator("${s.correct}").${s.assertion || 'toContainText'} en su lugar.`).join('\n')}
 
-  Esta información viene de errores reales detectados y corregidos automáticamente.
-  Respétala estrictamente.
-  `
+Esta información viene de errores reales detectados y corregidos automáticamente.
+Respétala estrictamente.
+`
     : '';
 
-  // Si hay memoria, lo mostramos en consola para que el usuario sepa
-  // que el agente está aplicando conocimiento previo
   if (knownSelectors.length > 0) {
     console.log(`🧠 Memoria activa: ${knownSelectors.length} selector(es) conocido(s) para ${domain}\n`);
   }
@@ -335,10 +335,18 @@ test.describe('Nombre descriptivo', () => {
   return null;
 }
 
-function saveTests(code, url) {
+/**
+ * Guarda el código de tests en .qagen/tests/generated/.
+ *
+ * @param {string} code
+ * @param {string} url
+ * @param {string} qagenDir  ruta absoluta a .qagen/
+ * @returns {string}  ruta absoluta del archivo generado
+ */
+function saveTests(code, url, qagenDir) {
   const domain = new URL(url).hostname.replace(/\./g, '_');
   const filename = `${domain}_${Date.now()}.spec.js`;
-  const filepath = path.join(__dirname, '..', 'tests', 'generated', filename);
+  const filepath = path.join(qagenDir, 'tests', 'generated', filename);
 
   fs.mkdirSync(path.dirname(filepath), { recursive: true });
 
@@ -358,7 +366,7 @@ function saveTests(code, url) {
   );
 
   fs.writeFileSync(filepath, clean);
-  console.log(`✅ Tests guardados en: tests/generated/${filename}\n`);
+  console.log(`✅ Tests guardados en: .qagen/tests/generated/${filename}\n`);
 
   return filepath;
 }
