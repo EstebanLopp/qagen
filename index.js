@@ -11,26 +11,54 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-const command = process.argv[2];
-const mode = process.argv[3] || 'single';
+const args = process.argv.slice(2);
+const command = args[0];
+
+// ─── Command routing ───────────────────────────────────────────────────────
 
 if (command === 'config') {
   runConfigWizard().catch(console.error);
   return;
 }
 
-const url = command;
-
-if (!url || url.startsWith('--')) {
+if (!command || command === '--help') {
   console.log('\nQAgen — Autonomous QA agent\n');
   console.log('Usage:');
-  console.log('  qagen https://your-app.com           Analyze and test a single page');
-  console.log('  qagen https://your-app.com crawl     Crawl and test all routes');
-  console.log('  qagen config                         Configure your OpenAI API key\n');
+  console.log('  qagen https://your-app.com                    Analyze and test a single page');
+  console.log('  qagen https://your-app.com crawl              Crawl and test all routes');
+  console.log('  qagen --urls https://app.com/a https://app.com/b   Test specific URLs');
+  console.log('  qagen config                                  Configure your OpenAI API key\n');
+  process.exit(1);
+}
+
+// ─── Mode detection ────────────────────────────────────────────────────────
+
+// --urls mode: qagen --urls url1 url2 url3 ...
+const isUrlsMode = command === '--urls';
+
+// crawl mode: qagen https://url crawl
+const isCrawlMode = !isUrlsMode && args[1] === 'crawl';
+
+// single mode: qagen https://url
+const isSingleMode = !isUrlsMode && !isCrawlMode;
+
+const url = isUrlsMode ? null : command;
+const urlsList = isUrlsMode ? args.slice(1) : [];
+
+if (isUrlsMode && urlsList.length === 0) {
+  console.log('\nError: --urls requires at least one URL.\n');
+  console.log('Example: qagen --urls https://app.com/login https://app.com/dashboard\n');
+  process.exit(1);
+}
+
+if (!isUrlsMode && (!url || url.startsWith('--'))) {
+  console.log('\nError: invalid URL provided.\n');
   process.exit(1);
 }
 
 const QAGEN_DIR = path.join(process.cwd(), '.qagen');
+
+// ─── Setup ─────────────────────────────────────────────────────────────────
 
 function initQagenDir() {
   const dirs = [
@@ -90,6 +118,8 @@ function clearPreviousTests() {
   }
 }
 
+// ─── Test execution ────────────────────────────────────────────────────────
+
 function runTests() {
   console.log('\nRunning tests...\n');
 
@@ -146,22 +176,54 @@ function rerunTests() {
   return (result.stdout || '') + (result.stderr || '');
 }
 
+// ─── Analysis helpers ──────────────────────────────────────────────────────
+
+async function analyzeRoutes(routes, session, timeline) {
+  const failed = [];
+
+  for (let i = 0; i < routes.length; i++) {
+    const route = routes[i];
+    console.log(`[${i + 1}/${routes.length}] ${route}`);
+
+    try {
+      const analyzeStart = Date.now();
+      const result = await analyzeApp(route, QAGEN_DIR);
+      timeline.push({
+        label: `Analyzed ${new URL(route).pathname || '/'}`,
+        startedAt: analyzeStart,
+        duration: Date.now() - analyzeStart
+      });
+      session.testsFile = path.basename(result.filepath);
+      session.flow = result.flow;
+      session.memoryBefore = result.memoryCount;
+    } catch (err) {
+      console.log(`Failed to analyze ${route}: ${err.message}`);
+      failed.push(route);
+    }
+  }
+
+  if (failed.length > 0) {
+    console.log('\nFailed routes:');
+    failed.forEach(r => console.log(`  ${r}`));
+  }
+}
+
+// ─── Main ──────────────────────────────────────────────────────────────────
+
 async function run() {
   initQagenDir();
   ensurePlaywrightConfig();
   clearPreviousTests();
 
-  // Timeline tracks each step with its timestamp and duration.
-  // This data powers the session timeline in the HTML report.
   const timeline = [];
   const sessionStart = Date.now();
 
-  function addEvent(label, startedAt) {
-    timeline.push({ label, startedAt, duration: Date.now() - startedAt });
-  }
+  // The session URL is used for the report header and failure analysis.
+  // In --urls mode we use the first URL as the primary reference.
+  const sessionUrl = isUrlsMode ? urlsList[0] : url;
 
   const session = {
-    url,
+    url: sessionUrl,
     startTime: sessionStart,
     flow: { type: 'unknown', confidence: 'low' },
     testsFile: '',
@@ -170,59 +232,54 @@ async function run() {
     finalOutput: null,
     failureAnalyses: [],
     timeline,
-    memoryBefore: 0,  // selectors known before this session
-    memoryAfter: 0,   // selectors known after healing
+    memoryBefore: 0,
+    memoryAfter: 0,
     qagenDir: QAGEN_DIR
   };
 
-  if (mode === 'crawl') {
+  // ── Route collection ──────────────────────────────────────────────────────
+
+  if (isUrlsMode) {
+    // User provided explicit list of URLs
+    console.log(`\nAnalyzing ${urlsList.length} URL(s)...\n`);
+    await analyzeRoutes(urlsList, session, timeline);
+
+  } else if (isCrawlMode) {
+    // Auto-detect routes from the base URL
     const crawlStart = Date.now();
     const routes = await crawlRoutes(url);
-    addEvent('Route crawl', crawlStart);
+    timeline.push({ label: 'Route crawl', startedAt: crawlStart, duration: Date.now() - crawlStart });
 
     console.log('\nAnalyzing routes...\n');
-    const failed = [];
-
-    for (let i = 0; i < routes.length; i++) {
-      const route = routes[i];
-      console.log(`[${i + 1}/${routes.length}] ${route}`);
-
-      try {
-        const analyzeStart = Date.now();
-        const result = await analyzeApp(route, QAGEN_DIR);
-        addEvent(`Analyzed ${new URL(route).pathname}`, analyzeStart);
-        session.testsFile = path.basename(result.filepath);
-        session.flow = result.flow;
-        session.memoryBefore = result.memoryCount;
-      } catch (err) {
-        console.log(`Failed to analyze ${route}: ${err.message}`);
-        failed.push(route);
-      }
-    }
-
-    if (failed.length > 0) {
-      console.log('\nFailed routes:');
-      failed.forEach(r => console.log(`  ${r}`));
-    }
+    await analyzeRoutes(routes, session, timeline);
 
   } else {
+    // Single page mode
     const analyzeStart = Date.now();
     const result = await analyzeApp(url, QAGEN_DIR);
-    addEvent('Page analysis + test generation', analyzeStart);
+    timeline.push({
+      label: 'Page analysis + test generation',
+      startedAt: analyzeStart,
+      duration: Date.now() - analyzeStart
+    });
     session.testsFile = path.basename(result.filepath);
     session.flow = result.flow;
     session.memoryBefore = result.memoryCount;
   }
 
+  // ── Test execution ────────────────────────────────────────────────────────
+
   const runStart = Date.now();
   const { output, hasFailed } = runTests();
-  addEvent('Test execution', runStart);
+  timeline.push({ label: 'Test execution', startedAt: runStart, duration: Date.now() - runStart });
   session.firstOutput = output;
+
+  // ── Healing ───────────────────────────────────────────────────────────────
 
   if (hasFailed) {
     const healStart = Date.now();
     const healResult = await healFailures(output, QAGEN_DIR);
-    addEvent('Self-healing', healStart);
+    timeline.push({ label: 'Self-healing', startedAt: healStart, duration: Date.now() - healStart });
     session.healing = healResult;
     session.memoryAfter = session.memoryBefore + healResult.healed;
 
@@ -233,17 +290,19 @@ async function run() {
       }
       const rerunStart = Date.now();
       session.finalOutput = rerunTests();
-      addEvent('Re-run after healing', rerunStart);
+      timeline.push({ label: 'Re-run after healing', startedAt: rerunStart, duration: Date.now() - rerunStart });
     } else {
       console.log('\nCould not automatically heal failures');
       session.memoryAfter = session.memoryBefore;
     }
 
     const outputToAnalyze = session.finalOutput || output;
-    session.failureAnalyses = await analyzeUnresolvedFailures(outputToAnalyze, url);
+    session.failureAnalyses = await analyzeUnresolvedFailures(outputToAnalyze, sessionUrl);
   } else {
     session.memoryAfter = session.memoryBefore;
   }
+
+  // ── Report ────────────────────────────────────────────────────────────────
 
   generateReport(session);
 
