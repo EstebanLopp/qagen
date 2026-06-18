@@ -151,22 +151,36 @@ async function run() {
   ensurePlaywrightConfig();
   clearPreviousTests();
 
+  // Timeline tracks each step with its timestamp and duration.
+  // This data powers the session timeline in the HTML report.
+  const timeline = [];
+  const sessionStart = Date.now();
+
+  function addEvent(label, startedAt) {
+    timeline.push({ label, startedAt, duration: Date.now() - startedAt });
+  }
+
   const session = {
     url,
-    startTime: Date.now(),
+    startTime: sessionStart,
     flow: { type: 'unknown', confidence: 'low' },
     testsFile: '',
     firstOutput: '',
     healing: { healed: 0, failed: 0, details: [] },
     finalOutput: null,
     failureAnalyses: [],
+    timeline,
+    memoryBefore: 0,  // selectors known before this session
+    memoryAfter: 0,   // selectors known after healing
     qagenDir: QAGEN_DIR
   };
 
   if (mode === 'crawl') {
+    const crawlStart = Date.now();
     const routes = await crawlRoutes(url);
-    console.log('\nAnalyzing routes...\n');
+    addEvent('Route crawl', crawlStart);
 
+    console.log('\nAnalyzing routes...\n');
     const failed = [];
 
     for (let i = 0; i < routes.length; i++) {
@@ -174,9 +188,12 @@ async function run() {
       console.log(`[${i + 1}/${routes.length}] ${route}`);
 
       try {
+        const analyzeStart = Date.now();
         const result = await analyzeApp(route, QAGEN_DIR);
+        addEvent(`Analyzed ${new URL(route).pathname}`, analyzeStart);
         session.testsFile = path.basename(result.filepath);
         session.flow = result.flow;
+        session.memoryBefore = result.memoryCount;
       } catch (err) {
         console.log(`Failed to analyze ${route}: ${err.message}`);
         failed.push(route);
@@ -189,30 +206,43 @@ async function run() {
     }
 
   } else {
+    const analyzeStart = Date.now();
     const result = await analyzeApp(url, QAGEN_DIR);
+    addEvent('Page analysis + test generation', analyzeStart);
     session.testsFile = path.basename(result.filepath);
     session.flow = result.flow;
+    session.memoryBefore = result.memoryCount;
   }
 
+  const runStart = Date.now();
   const { output, hasFailed } = runTests();
+  addEvent('Test execution', runStart);
   session.firstOutput = output;
 
   if (hasFailed) {
+    const healStart = Date.now();
     const healResult = await healFailures(output, QAGEN_DIR);
+    addEvent('Self-healing', healStart);
     session.healing = healResult;
+    session.memoryAfter = session.memoryBefore + healResult.healed;
 
     if (healResult.healed > 0) {
       console.log(`\nHealing complete: ${healResult.healed} test(s) fixed`);
       if (healResult.failed > 0) {
         console.log(`${healResult.failed} failure(s) could not be healed`);
       }
+      const rerunStart = Date.now();
       session.finalOutput = rerunTests();
+      addEvent('Re-run after healing', rerunStart);
     } else {
       console.log('\nCould not automatically heal failures');
+      session.memoryAfter = session.memoryBefore;
     }
 
     const outputToAnalyze = session.finalOutput || output;
     session.failureAnalyses = await analyzeUnresolvedFailures(outputToAnalyze, url);
+  } else {
+    session.memoryAfter = session.memoryBefore;
   }
 
   generateReport(session);

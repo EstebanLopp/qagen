@@ -105,11 +105,10 @@ async function analyzeApp(url, qagenDir) {
   await browser.close();
 
   const flow = detectFlow(url, elements, pageInfo);
-
-  console.log(`Flow detected: ${flow.type} (confidence: ${flow.confidence})`);
-
   const domain = new URL(url).hostname;
   const knownSelectors = readMemory(domain);
+
+  console.log(`Flow detected: ${flow.type} (confidence: ${flow.confidence})`);
 
   if (knownSelectors.length > 0) {
     console.log(`Memory: ${knownSelectors.length} known selector(s) for ${domain}`);
@@ -125,7 +124,10 @@ async function analyzeApp(url, qagenDir) {
   }
 
   const filepath = saveTests(result.code, url, qagenDir);
-  return { filepath, flow };
+
+  // memoryCount is passed to the session so the report can show
+  // how many selectors were known before this session started
+  return { filepath, flow, memoryCount: knownSelectors.length };
 }
 
 async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow, knownSelectors) {
