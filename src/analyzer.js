@@ -246,6 +246,10 @@ CRITICAL RULES:
 4. For downloads: const [download] = await Promise.all([page.waitForEvent('download'), page.click('selector')]);
 5. Valid assertions: toBeVisible(), toBeHidden(), toBeEnabled(), toBeDisabled(), toBeChecked(), toHaveURL(), toHaveText(), toHaveAttribute(), toContainText(). NEVER use toBeClickable().
 6. ONLY test what exists in the HTML. Do not invent logic.
+   NEVER assume what happens after an action. Do not test for validation messages,
+   error states, or post-action content unless those exact elements appear in the HTML provided above.
+   NEVER test visibility of elements that have hidden, display:none, or visibility:hidden 
+   in the provided HTML. If an element is hidden in the initial state, skip it.
 7. For checkboxes: use the "checked" field from real state to determine initial state.
 8. Generate maximum 5 tests. Prioritize real user flows.
 9. Do NOT generate tests for links to elementalselenium.com.
@@ -328,6 +332,14 @@ function saveTests(code, url, qagenDir) {
   clean = clean.replace(
     /await expect\(page\)\.toHaveText\(/g,
     'await expect(page.locator("body")).toContainText('
+  );
+  clean = clean.replace(
+  /page\.locator\(`text=\$\{([^}]+)\}`\)/g,
+  'page.getByText($1, { exact: true }).first()'
+  );
+  clean = clean.replace(
+    /page\.locator\('text=([^']+)'\)/g,
+    "page.getByText('$1', { exact: true }).first()"
   );
 
   fs.writeFileSync(filepath, clean);

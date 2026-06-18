@@ -1,6 +1,6 @@
 {
   "name": "@estebanlopp/qagen",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Autonomous QA agent that analyzes your web app, generates Playwright tests with AI, and self-heals when selectors break.",
   "main": "index.js",
   "bin": {
