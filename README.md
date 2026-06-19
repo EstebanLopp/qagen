@@ -1,5 +1,9 @@
 # QAgen
 
+[![npm version](https://img.shields.io/npm/v/@estebanlopp/qagen.svg)](https://www.npmjs.com/package/@estebanlopp/qagen)
+[![npm downloads](https://img.shields.io/npm/dm/@estebanlopp/qagen.svg)](https://www.npmjs.com/package/@estebanlopp/qagen)
+[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
+
 **Autonomous QA agent for web applications.**
 
 QAgen analyzes your app, generates Playwright tests using AI, executes them, and self-heals broken selectors — without manual intervention.
@@ -99,7 +103,7 @@ your-project/
 
 ## Current status
 
-QAgen is in active development. Current version: `0.1.x` — MVP CLI, tested against real web applications.
+QAgen is in active development. Current version: `0.2.0` — MVP CLI, tested against real web applications.
 
 Working today:
 - Automatic route crawling
