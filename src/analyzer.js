@@ -44,6 +44,17 @@ async function analyzeApp(url, qagenDir, credentials = null) {
 
   await page.goto(url);
 
+  // Wait for the page to fully render before extracting elements.
+  // SPAs built with React, Vue or Angular load their content via JavaScript
+  // after the initial HTML response. Without this wait, the analyzer may
+  // capture an empty or partial DOM.
+  try {
+    await page.waitForLoadState('networkidle', { timeout: 8000 });
+  } catch {
+    // If networkidle times out (some apps have long-polling connections),
+    // fall through — the DOM is usually stable enough at this point.
+  }
+
   const elements = await page.evaluate(() => {
     const result = { buttons: [], inputs: [], forms: [], links: [] };
 
