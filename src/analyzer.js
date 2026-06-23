@@ -31,7 +31,12 @@ function detectPageCategory(url) {
   return 'standard';
 }
 
-async function analyzeApp(url, qagenDir) {
+/**
+ * @param {string} url
+ * @param {string} qagenDir
+ * @param {{ username: string, password: string } | null} credentials
+ */
+async function analyzeApp(url, qagenDir, credentials = null) {
   console.log(`\nAnalyzing: ${url}\n`);
 
   const browser = await chromium.launch();
@@ -114,23 +119,24 @@ async function analyzeApp(url, qagenDir) {
     console.log(`Memory: ${knownSelectors.length} known selector(s) for ${domain}`);
   }
 
+  if (credentials && (flow.type === 'login' || flow.type === 'register')) {
+    console.log(`Credentials: using provided username/password`);
+  }
+
   console.log('Generating tests...\n');
 
   const pageCategory = detectPageCategory(url);
-  const result = await generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow, knownSelectors);
+  const result = await generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow, knownSelectors, credentials);
 
   if (!result) {
     throw new Error(`Failed to generate valid test code for ${url}`);
   }
 
   const filepath = saveTests(result.code, url, qagenDir);
-
-  // memoryCount is passed to the session so the report can show
-  // how many selectors were known before this session started
   return { filepath, flow, memoryCount: knownSelectors.length };
 }
 
-async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow, knownSelectors) {
+async function generateTests(url, elements, bodyHTML, pageInfo, pageCategory, flow, knownSelectors, credentials = null) {
   const categoryInstructions = {
     auth: `SPECIAL INSTRUCTION - AUTHENTICATED PAGE:
 - beforeEach must use: await page.goto('${url.replace('://', '://admin:admin@')}');
@@ -216,6 +222,20 @@ This comes from real errors detected and corrected automatically. Follow it stri
 `
     : '';
 
+  // If credentials are provided and the page is a login flow,
+  // inject them into the prompt so the AI uses real credentials
+  // instead of placeholder values like 'testuser' or 'password123'
+  const credentialsContext = credentials && (flow.type === 'login' || flow.type === 'register')
+    ? `
+CREDENTIALS (use these exact values in login tests):
+- Username: ${credentials.username}
+- Password: ${credentials.password}
+
+Use these credentials when testing successful login scenarios.
+For invalid credential tests, use a deliberately wrong password like "${credentials.password}_invalid".
+`
+    : '';
+
   const prompt = `
 You are an expert in automated testing with Playwright v1.60.
 Generate valid tests for the URL: ${url}
@@ -236,6 +256,7 @@ Current element state:
 
 ${flowContext}
 ${memoryContext}
+${credentialsContext}
 ${specialInstruction ? `\n${specialInstruction}\n` : ''}
 ${restrictions.length > 0 ? '\nSPECIFIC RESTRICTIONS:\n' + restrictions.join('\n') : ''}
 
@@ -248,8 +269,8 @@ CRITICAL RULES:
 6. ONLY test what exists in the HTML. Do not invent logic.
    NEVER assume what happens after an action. Do not test for validation messages,
    error states, or post-action content unless those exact elements appear in the HTML provided above.
-   NEVER test visibility of elements that have hidden, display:none, or visibility:hidden 
-   in the provided HTML. If an element is hidden in the initial state, skip it.
+   NEVER test visibility of elements that have hidden attribute in the HTML. If an element
+   is hidden in the initial state, skip it.
 7. For checkboxes: use the "checked" field from real state to determine initial state.
 8. Generate maximum 5 tests. Prioritize real user flows.
 9. Do NOT generate tests for links to elementalselenium.com.
@@ -258,6 +279,7 @@ CRITICAL RULES:
 12. To verify a password field masks text, ALWAYS use:
     await expect(page.locator('input[type="password"]')).toHaveAttribute('type', 'password');
     NEVER check the field value or use .not.toBe() for this.
+    Only generate this test if input[type="password"] exists in the HTML above.
 
 Exact structure:
 const { test, expect } = require('@playwright/test');
@@ -334,8 +356,8 @@ function saveTests(code, url, qagenDir) {
     'await expect(page.locator("body")).toContainText('
   );
   clean = clean.replace(
-  /page\.locator\(`text=\$\{([^}]+)\}`\)/g,
-  'page.getByText($1, { exact: true }).first()'
+    /page\.locator\(`text=\$\{([^}]+)\}`\)/g,
+    'page.getByText($1, { exact: true }).first()'
   );
   clean = clean.replace(
     /page\.locator\('text=([^']+)'\)/g,

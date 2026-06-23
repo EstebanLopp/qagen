@@ -11,39 +11,83 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-const args = process.argv.slice(2);
-const command = args[0];
+// ─── Argument parsing ──────────────────────────────────────────────────────
+
+const rawArgs = process.argv.slice(2);
+
+function parseArgs(args) {
+  const result = {
+    command: null,
+    urls: [],
+    username: null,
+    password: null,
+    mode: 'single'
+  };
+
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+
+    if (arg === '--username' || arg === '-u') {
+      result.username = args[++i];
+    } else if (arg === '--password' || arg === '-p') {
+      result.password = args[++i];
+    } else if (arg === '--urls') {
+      // Collect all following URLs until next flag or end
+      i++;
+      while (i < args.length && !args[i].startsWith('--')) {
+        result.urls.push(args[i]);
+        i++;
+      }
+      result.command = '--urls';
+      continue;
+    } else if (arg === 'config') {
+      result.command = 'config';
+    } else if (arg === 'crawl') {
+      result.mode = 'crawl';
+    } else if (!arg.startsWith('--') && !result.command) {
+      result.command = arg; // first positional = URL or command
+    }
+
+    i++;
+  }
+
+  // Fallback to env variables for credentials
+  if (!result.username) result.username = process.env.QAGEN_USERNAME || null;
+  if (!result.password) result.password = process.env.QAGEN_PASSWORD || null;
+
+  return result;
+}
+
+const parsed = parseArgs(rawArgs);
 
 // ─── Command routing ───────────────────────────────────────────────────────
 
-if (command === 'config') {
+if (parsed.command === 'config') {
   runConfigWizard().catch(console.error);
   return;
 }
 
-if (!command || command === '--help') {
+if (!parsed.command) {
   console.log('\nQAgen — Autonomous QA agent\n');
   console.log('Usage:');
-  console.log('  qagen https://your-app.com                    Analyze and test a single page');
-  console.log('  qagen https://your-app.com crawl              Crawl and test all routes');
-  console.log('  qagen --urls https://app.com/a https://app.com/b   Test specific URLs');
-  console.log('  qagen config                                  Configure your OpenAI API key\n');
+  console.log('  qagen https://app.com                                  Analyze a single page');
+  console.log('  qagen https://app.com crawl                            Crawl and test all routes');
+  console.log('  qagen --urls https://app.com/a https://app.com/b      Test specific URLs');
+  console.log('  qagen https://app.com --username admin --password secret   With credentials');
+  console.log('  qagen config                                           Configure OpenAI API key\n');
+  console.log('Credentials can also be set via environment variables:');
+  console.log('  QAGEN_USERNAME=admin QAGEN_PASSWORD=secret qagen https://app.com\n');
   process.exit(1);
 }
 
-// ─── Mode detection ────────────────────────────────────────────────────────
-
-// --urls mode: qagen --urls url1 url2 url3 ...
-const isUrlsMode = command === '--urls';
-
-// crawl mode: qagen https://url crawl
-const isCrawlMode = !isUrlsMode && args[1] === 'crawl';
-
-// single mode: qagen https://url
-const isSingleMode = !isUrlsMode && !isCrawlMode;
-
-const url = isUrlsMode ? null : command;
-const urlsList = isUrlsMode ? args.slice(1) : [];
+const isUrlsMode = parsed.command === '--urls';
+const isCrawlMode = !isUrlsMode && parsed.mode === 'crawl';
+const url = isUrlsMode ? null : parsed.command;
+const urlsList = isUrlsMode ? parsed.urls : [];
+const credentials = parsed.username && parsed.password
+  ? { username: parsed.username, password: parsed.password }
+  : null;
 
 if (isUrlsMode && urlsList.length === 0) {
   console.log('\nError: --urls requires at least one URL.\n');
@@ -51,9 +95,8 @@ if (isUrlsMode && urlsList.length === 0) {
   process.exit(1);
 }
 
-if (!isUrlsMode && (!url || url.startsWith('--'))) {
-  console.log('\nError: invalid URL provided.\n');
-  process.exit(1);
+if (credentials) {
+  console.log(`\nCredentials loaded for: ${parsed.username}`);
 }
 
 const QAGEN_DIR = path.join(process.cwd(), '.qagen');
@@ -187,7 +230,7 @@ async function analyzeRoutes(routes, session, timeline) {
 
     try {
       const analyzeStart = Date.now();
-      const result = await analyzeApp(route, QAGEN_DIR);
+      const result = await analyzeApp(route, QAGEN_DIR, credentials);
       timeline.push({
         label: `Analyzed ${new URL(route).pathname || '/'}`,
         startedAt: analyzeStart,
@@ -217,9 +260,6 @@ async function run() {
 
   const timeline = [];
   const sessionStart = Date.now();
-
-  // The session URL is used for the report header and failure analysis.
-  // In --urls mode we use the first URL as the primary reference.
   const sessionUrl = isUrlsMode ? urlsList[0] : url;
 
   const session = {
@@ -237,26 +277,20 @@ async function run() {
     qagenDir: QAGEN_DIR
   };
 
-  // ── Route collection ──────────────────────────────────────────────────────
-
   if (isUrlsMode) {
-    // User provided explicit list of URLs
     console.log(`\nAnalyzing ${urlsList.length} URL(s)...\n`);
     await analyzeRoutes(urlsList, session, timeline);
 
   } else if (isCrawlMode) {
-    // Auto-detect routes from the base URL
     const crawlStart = Date.now();
     const routes = await crawlRoutes(url);
     timeline.push({ label: 'Route crawl', startedAt: crawlStart, duration: Date.now() - crawlStart });
-
     console.log('\nAnalyzing routes...\n');
     await analyzeRoutes(routes, session, timeline);
 
   } else {
-    // Single page mode
     const analyzeStart = Date.now();
-    const result = await analyzeApp(url, QAGEN_DIR);
+    const result = await analyzeApp(url, QAGEN_DIR, credentials);
     timeline.push({
       label: 'Page analysis + test generation',
       startedAt: analyzeStart,
@@ -267,14 +301,10 @@ async function run() {
     session.memoryBefore = result.memoryCount;
   }
 
-  // ── Test execution ────────────────────────────────────────────────────────
-
   const runStart = Date.now();
   const { output, hasFailed } = runTests();
   timeline.push({ label: 'Test execution', startedAt: runStart, duration: Date.now() - runStart });
   session.firstOutput = output;
-
-  // ── Healing ───────────────────────────────────────────────────────────────
 
   if (hasFailed) {
     const healStart = Date.now();
@@ -301,8 +331,6 @@ async function run() {
   } else {
     session.memoryAfter = session.memoryBefore;
   }
-
-  // ── Report ────────────────────────────────────────────────────────────────
 
   generateReport(session);
 
