@@ -1,9 +1,5 @@
 # QAgen
 
-[![npm version](https://img.shields.io/npm/v/@estebanlopp/qagen.svg)](https://www.npmjs.com/package/@estebanlopp/qagen)
-[![npm downloads](https://img.shields.io/npm/dm/@estebanlopp/qagen.svg)](https://www.npmjs.com/package/@estebanlopp/qagen)
-[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
-
 **Autonomous QA agent for web applications.**
 
 QAgen analyzes your app, generates Playwright tests using AI, executes them, and self-heals broken selectors — without manual intervention.
@@ -58,19 +54,46 @@ The key is stored globally in `~/.qagen/config.json` and works from any director
 
 ## Usage
 
-Analyze a single page:
-
+**Analyze a single page:**
 ```bash
 qagen https://your-app.com/login
 ```
 
-Crawl and analyze the entire application:
-
+**Crawl and analyze the entire application:**
 ```bash
 qagen https://your-app.com crawl
 ```
 
+**Analyze specific pages (recommended for SPAs):**
+```bash
+qagen --urls https://your-app.com/login https://your-app.com/dashboard https://your-app.com/checkout
+```
+
+**With authentication credentials:**
+```bash
+qagen https://your-app.com/login --username admin --password secret
+```
+
+Credentials can also be set via environment variables:
+```bash
+QAGEN_USERNAME=admin QAGEN_PASSWORD=secret qagen https://your-app.com/login
+```
+
 QAgen creates a `.qagen/` folder in your current directory containing all generated files. If a `.gitignore` file exists, `.qagen/` is added automatically.
+
+---
+
+## Working with SPAs
+
+Apps built with React, Vue, or Angular load their routes dynamically via JavaScript. The `crawl` command may only find the root route in these cases. Use `--urls` instead to specify the pages you want to test:
+
+```bash
+qagen --urls \
+  https://your-app.com/login \
+  https://your-app.com/dashboard \
+  https://your-app.com/products \
+  https://your-app.com/settings
+```
 
 ---
 
@@ -78,7 +101,7 @@ QAgen creates a `.qagen/` folder in your current directory containing all genera
 
 After each run, two reports are generated:
 
-- `.qagen/qagen-report.html` — Session summary: detected flow, test results, self-healing activity
+- `.qagen/qagen-report.html` — Session summary: detected flow, test results, self-healing activity, value generated
 - `.qagen/playwright-report/` — Full Playwright HTML report with screenshots on failure
 
 ```bash
@@ -103,20 +126,24 @@ your-project/
 
 ## Current status
 
-QAgen is in active development. Current version: `0.2.0` — MVP CLI, tested against real web applications.
+QAgen is in active development. Current version: `0.2.x` — tested against real web applications.
 
 Working today:
 - Automatic route crawling
+- Specific URL targeting with `--urls`
+- Authentication credentials via flags or environment variables
 - Critical flow detection (login, register, checkout, search, forms, dashboard)
 - AI test generation with business context
 - Autonomous self-healing with live DOM inspection
 - Contextual memory per domain
 - Root cause analysis for unresolved failures
-- Session HTML report
+- Session HTML report with timeline and value metrics
+- SPA support via networkidle wait
 
-In progress:
-- CI/CD integration
-- Web dashboard
+Known limitations:
+- SPAs with fully client-side routing require `--urls` instead of `crawl`
+- Apps with OAuth or 2FA are not currently supported
+- Pages that require state (items in cart, completed tasks) may generate tests for hidden elements
 
 ---
 
